@@ -1,0 +1,91 @@
+# +-------------------------------------------------------------------+
+# | (C) Copyright IBM Corp. 2025,2026                                 |
+# | SPDX-License-Identifier: Apache-2.0.                              |
+# +-------------------------------------------------------------------+
+
+name: Version Patch Workflow
+
+on:
+  workflow_call:
+    inputs:
+      version_bump:
+        description: 'Version bump type (minor or major)'
+        required: true
+        type: string
+        default: 'minor'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version-patch:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Get current version
+      id: current_version
+      run: |
+        CURRENT_VERSION=$(cat VERSION)
+        echo "version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+        echo "Current version: ${CURRENT_VERSION}"
+
+    - name: Download increment-version script
+      run: |
+        curl -sSL -o increment-version.bash https://raw.githubusercontent.com/ibm-aiu/spyre-operator-actions/main/scripts/increment-version.bash
+        chmod +x increment-version.bash
+
+    - name: Increment version
+      run: |
+        bash increment-version.bash --${{ github.event.inputs.version_bump }}
+        rm -f increment-version.bash
+
+    - name: Get new version
+      id: increment_version
+      run: |
+        NEW_VERSION=$(cat VERSION)
+        echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+        echo "New version: ${NEW_VERSION}"
+
+    - name: Create Pull Request
+      id: create_pr
+      uses: peter-evans/create-pull-request@v6
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        branch: version-patch/v${{ steps.increment_version.outputs.new_version }}
+        commit-message: "chore: bump version to ${{ steps.increment_version.outputs.new_version
+          }}"
+        signoff: true
+        base: main
+        title: "chore: bump version to v${{ steps.increment_version.outputs.new_version
+          }}"
+        body: |
+          ## Version Patch v${{ steps.increment_version.outputs.new_version }}
+
+          This PR bumps the version from `${{ steps.current_version.outputs.version }}` to `${{ steps.increment_version.outputs.new_version }}`.
+
+          ### Changes
+          - Updated VERSION file to ${{ steps.increment_version.outputs.new_version }}
+
+          ---
+          *This PR was automatically created by the Version Patch Workflow*
+        labels: |
+          chore
+          version-bump
+
+    - name: Summary
+      run: |
+        echo "## Version Patch Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Previous Version**: ${{ steps.current_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **New Version**: ${{ steps.increment_version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version Bump Type**: ${{ github.event.inputs.version_bump }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: version-patch/v${{ steps.increment_version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Pull Request**: ${{ steps.create_pr.outputs.pull-request-url }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "A pull request has been created to merge the version bump into main." >> $GITHUB_STEP_SUMMARY

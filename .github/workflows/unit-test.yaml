@@ -1,0 +1,53 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2025,2026                                     |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: Unit Test
+
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: 'Go version to use'
+        required: false
+        type: string
+        default: '1.24.13'
+      goprivate:
+        description: 'GOPRIVATE environment variable for private Go modules'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      gh-token:
+        description: 'GitHub token for accessing private repositories (PAT with repo scope)'
+        required: false
+
+permissions: read-all
+
+jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    
+    - name: Configure Git for private repos
+      env:
+        GH_TOKEN: ${{ secrets.gh-token || secrets.GITHUB_TOKEN }}
+      run: |
+        git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+    
+    - uses: actions/setup-go@v6
+      with:
+        go-version: ${{ inputs.go-version }}
+    
+    - name: Set GOPRIVATE
+      if: ${{ inputs.goprivate != '' }}
+      run:
+        echo "GOPRIVATE=${{ inputs.goprivate }}" >> $GITHUB_ENV
+
+    - name: Run unit test
+      run: make test
+    
+    - name: Run build
+      run: make build
