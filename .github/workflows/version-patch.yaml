@@ -13,6 +13,11 @@ on:
         required: true
         type: string
         default: 'minor'
+      operator_sdk_version:
+        description: 'Operator SDK version to install (only for spyre-operator projects)'
+        required: false
+        type: string
+        default: 'v1.38.0'
 
 permissions:
   contents: write
@@ -51,6 +56,93 @@ jobs:
         NEW_VERSION=$(cat VERSION)
         echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
         echo "New version: ${NEW_VERSION}"
+
+    - name: Check if spyre-operator project
+      id: check_project
+      run: |
+        REPO_NAME=$(basename ${{ github.repository }})
+        echo "repo_name=${REPO_NAME}" >> $GITHUB_OUTPUT
+        if [[ "${REPO_NAME}" == "spyre-operator" ]]; then
+          echo "is_spyre_operator=true" >> $GITHUB_OUTPUT
+          echo "This is a spyre-operator project"
+        fi
+
+    - name: Retrieve component versions
+      if: steps.check_project.outputs.is_spyre_operator == 'true'
+      id: component_versions
+      run: |
+        COMPONENTS=("spyre-device-plugin" "spyre-scheduler" "spyre-webhook-validator" "spyre-health-checker" "spyre-exporter" "dra-driver-spyre")
+        FALLBACK_VERSION="$(cat VERSION)-dev"
+        
+        echo "Retrieving component versions..."
+        echo "Fallback version: ${FALLBACK_VERSION}"
+        for COMPONENT in "${COMPONENTS[@]}"; do
+          VERSION_URL="https://raw.githubusercontent.com/ibm-aiu/${COMPONENT}/refs/heads/main/VERSION"
+          echo "Checking ${COMPONENT}..."
+          
+          if VERSION=$(curl -sSf "${VERSION_URL}" 2>/dev/null); then
+            VERSION_WITH_DEV="${VERSION}-dev"
+            echo "${COMPONENT}_version=${VERSION_WITH_DEV}" >> $GITHUB_OUTPUT
+            echo "  ${COMPONENT}: ${VERSION_WITH_DEV}"
+          else
+            echo "  ${COMPONENT}: VERSION file not found, using fallback ${FALLBACK_VERSION}"
+            echo "${COMPONENT}_version=${FALLBACK_VERSION}" >> $GITHUB_OUTPUT
+          fi
+        done
+
+    - name: Update release-artifacts.yaml with component versions
+      if: steps.check_project.outputs.is_spyre_operator == 'true'
+      run: |
+        if [ ! -f "release-artifacts.yaml" ]; then
+          echo "release-artifacts.yaml not found, skipping update"
+          exit 0
+        fi
+        
+        echo "Updating release-artifacts.yaml with component versions..."
+        
+        # Update component versions (always set, either from GitHub or fallback)
+        yq eval '.devicePlugin.version = "${{ steps.component_versions.outputs.spyre-device-plugin_version }}"' -i release-artifacts.yaml
+        yq eval '.devicePluginInit.version = "${{ steps.component_versions.outputs.spyre-device-plugin_version }}"' -i release-artifacts.yaml
+        echo "  Updated devicePlugin and devicePluginInit to ${{ steps.component_versions.outputs.spyre-device-plugin_version }}"
+        
+        yq eval '.scheduler.version = "${{ steps.component_versions.outputs.spyre-scheduler_version }}"' -i release-artifacts.yaml
+        echo "  Updated scheduler to ${{ steps.component_versions.outputs.spyre-scheduler_version }}"
+        
+        yq eval '.podValidator.version = "${{ steps.component_versions.outputs.spyre-webhook-validator_version }}"' -i release-artifacts.yaml
+        echo "  Updated podValidator to ${{ steps.component_versions.outputs.spyre-webhook-validator_version }}"
+        
+        yq eval '.healthChecker.version = "${{ steps.component_versions.outputs.spyre-health-checker_version }}"' -i release-artifacts.yaml
+        echo "  Updated healthChecker to ${{ steps.component_versions.outputs.spyre-health-checker_version }}"
+        
+        yq eval '.exporter.version = "${{ steps.component_versions.outputs.spyre-exporter_version }}"' -i release-artifacts.yaml
+        echo "  Updated exporter to ${{ steps.component_versions.outputs.spyre-exporter_version }}"
+
+        echo "release-artifacts.yaml update complete"
+
+        make propagate-version VERSION=$(cat VERSION)-dev
+        echo "Propagated version for components"
+
+    - name: Install operator-sdk
+      if: steps.check_project.outputs.is_spyre_operator == 'true'
+      run: |
+        export ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n $(uname -m) ;; esac)
+        export OS=$(uname | awk '{print tolower($0)}')
+        export OPERATOR_SDK_DL_URL=https://github.com/operator-framework/operator-sdk/releases/download/${{ inputs.operator_sdk_version }}
+        curl -LO ${OPERATOR_SDK_DL_URL}/operator-sdk_${OS}_${ARCH}
+        chmod +x operator-sdk_${OS}_${ARCH}
+        sudo mv operator-sdk_${OS}_${ARCH} /usr/local/bin/operator-sdk
+        operator-sdk version
+
+    - name: Run make bundle
+      if: steps.check_project.outputs.is_spyre_operator == 'true'
+      run: |
+        make bundle
+
+    - name: Run make propagate-version (dev)
+      if: steps.check_project.outputs.is_spyre_operator == 'true'
+      run: |
+        make propagate-version VERSION=$(cat VERSION)-dev
+        echo "Propagated version for operator"
 
     - name: Create Pull Request
       id: create_pr

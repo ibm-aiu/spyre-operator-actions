@@ -75,6 +75,7 @@ secrets:
 uses: ibm-aiu/spyre-operator-actions/.github/workflows/version-patch.yaml@main
 with:
   version_bump: ${{ inputs.version_bump }}  # Required: minor or major
+  operator_sdk_version: 'v1.38.0'           # Optional: operator-sdk version (default: 'v1.38.0')
 ```
 
 **Inputs:**
@@ -82,6 +83,10 @@ with:
 - `version_bump` (required): Version bump type
   - Type: choice
   - Options: `minor`, `major`
+- `operator_sdk_version` (optional): Operator SDK version to install
+  - Type: string
+  - Default: `'v1.38.0'`
+  - Only used for spyre-operator projects
 
 **Permissions:**
 
@@ -93,6 +98,30 @@ with:
 
 - Repository must contain a `VERSION` file
 - Default target branch is `main`
+
+**Special Behavior for spyre-operator Projects:**
+
+When the workflow detects that the repository name is `spyre-operator`, it automatically performs additional steps after incrementing the version:
+
+1. **Retrieve component versions**: Fetches the latest VERSION from dependent components:
+   - spyre-device-plugin
+   - spyre-scheduler
+   - spyre-webhook-validator
+   - spyre-health-checker
+   - spyre-exporter
+   - dra-driver-spyre
+   
+   All retrieved versions automatically get a `-dev` suffix appended. If a component's VERSION file is not found, it uses `$(cat VERSION)-dev` as a fallback version.
+
+2. **Update release-artifacts.yaml**: Uses `yq` to update component versions in the release-artifacts.yaml file with the retrieved versions (or fallback versions) from step 1.
+
+3. **Install operator-sdk**: Downloads and installs the specified version of operator-sdk
+
+4. **Run make bundle**: Generates operator bundle manifests
+
+5. **Run make propagate-version**: Propagates the new version throughout the project files
+
+These steps ensure that all operator-related files and component dependencies are updated with the correct versions before creating the pull request.
 
 ### Create Release Workflow
 
