@@ -10,6 +10,7 @@ Reusable GitHub Actions workflows for spyre-operator CI/CD pipeline.
 | [unit-test.yaml](.github/workflows/unit-test.yaml) | Run Go unit tests and build | PR checks, continuous testing |
 | [version-patch.yaml](.github/workflows/version-patch.yaml) | Create a PR to bump the VERSION file | Manual version updates |
 | [create-release.yaml](.github/workflows/create-release.yaml) | Create GitHub release from VERSION file | Release automation |
+| [sync-issues-to-projects.yaml](.github/workflows/sync-issues-to-projects.yaml) | Sync issue lifecycle events to multiple GitHub Projects v2 boards | Issue tracking across torch-spyre and ibm-aiu org projects |
 
 ## Workflow Inputs Reference
 
@@ -170,6 +171,53 @@ secrets:
 
 - Repository must contain a `VERSION` file with semantic version (e.g., `1.0.0`)
 - The workflow checks if the tag already exists to avoid conflicts
+
+### Sync Issues to Projects Workflow
+
+```yaml
+uses: ibm-aiu/spyre-operator-actions/.github/workflows/sync-issues-to-projects.yaml@main
+secrets:
+  project-token: ${{ secrets.TORCH_SPYRE_PROJECT_TOKEN }}
+```
+
+**Inputs (all optional):**
+
+- `status-field-name`: Name of the single-select status field in both project boards
+  - Type: string
+  - Default: `'Status'`
+- `status-triage`: Option label applied when an issue is opened or reopened
+  - Type: string
+  - Default: `'Triage'`
+- `status-done`: Option label applied when an issue is closed
+  - Type: string
+  - Default: `'Done'`
+
+**Secrets:**
+
+- `project-token` (required): PAT with Projects read & write access on both `torch-spyre` and `ibm-aiu` orgs
+  - Classic PAT scope: `project`
+
+**What it does:**
+
+- On `opened` / `reopened`: adds the issue to both org project boards (idempotent) and sets status to `Triage`
+- On `closed`: finds the existing project item in both boards and sets status to `Done`
+- Both org projects (`torch-spyre/projects/2` and `ibm-aiu/projects/1`) are updated in parallel
+
+**Example caller workflow** (place in `ibm-aiu/spyre-operator/.github/workflows/sync-issues-to-projects.yaml`):
+
+```yaml
+name: Sync Issues to Projects
+
+on:
+  issues:
+    types: [opened, closed, reopened]
+
+jobs:
+  sync:
+    uses: ibm-aiu/spyre-operator-actions/.github/workflows/sync-issues-to-projects.yaml@main
+    secrets:
+      project-token: ${{ secrets.TORCH_SPYRE_PROJECT_TOKEN }}
+```
 
 ## Advanced Usage
 
