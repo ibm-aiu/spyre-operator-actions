@@ -1,0 +1,269 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2025,2026 All Rights Reserved                 |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: Sync Issue to Projects
+
+# Reusable workflow that mirrors issue lifecycle events from a source repo
+# (ibm-aiu/spyre-operator) into two GitHub Projects v2 boards:
+#   - torch-spyre org project  (https://github.com/orgs/torch-spyre/projects/2)
+#   - ibm-aiu org project      (https://github.com/orgs/ibm-aiu/projects/1)
+#
+# Both projects are updated in parallel via a matrix strategy.
+#
+# HOW TO USE
+# ----------
+# In ibm-aiu/spyre-operator, create a workflow like:
+#
+#   name: Sync Issues to Projects
+#
+#   on:
+#     issues:
+#       types: [opened, closed, reopened]
+#
+#   jobs:
+#     sync:
+#       uses: ibm-aiu/spyre-operator-actions/ghe/sync-issues-to-projects.yaml@main
+#       secrets:
+#         project-token: ${{ secrets.TORCH_SPYRE_PROJECT_TOKEN }}
+#
+# REQUIRED SECRET in the calling repo
+# ------------------------------------
+#   TORCH_SPYRE_PROJECT_TOKEN
+#     Classic PAT scope : project
+#     Fine-grained scope: Projects read & write on both torch-spyre and ibm-aiu orgs
+#
+# EVENTS HANDLED
+# --------------
+#   opened   → Add issue to both projects and set status to <status-triage>
+#   reopened → Re-add issue (idempotent) and reset status to <status-triage>
+#   closed   → Set status to <status-done> in both projects
+
+on:
+  workflow_call:
+    inputs:
+      status-field-name:
+        description: 'Name of the single-select status field in both project boards'
+        required: false
+        type: string
+        default: 'Status'
+      status-triage:
+        description: 'Option label used for opened/reopened issues'
+        required: false
+        type: string
+        default: 'Triage'
+      status-done:
+        description: 'Option label used for closed issues'
+        required: false
+        type: string
+        default: 'Done'
+    secrets:
+      project-token:
+        description: 'PAT with Projects write access on both torch-spyre and ibm-aiu orgs'
+        required: true
+
+permissions:
+  issues: read
+
+jobs:
+  sync:
+    name: Sync to ${{ matrix.org }} / projects/${{ matrix.project-number }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # keep updating the other project even if one fails
+      matrix:
+        include:
+          - org: torch-spyre
+            project-number: 2
+          - org: ibm-aiu
+            project-number: 1
+
+    env:
+      GH_TOKEN: ${{ secrets.project-token }}
+      PROJECT_ORG: ${{ matrix.org }}
+      PROJECT_NUMBER: ${{ matrix.project-number }}
+      ISSUE_URL: ${{ github.event.issue.html_url }}
+      ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
+      EVENT_ACTION: ${{ github.event.action }}
+
+    steps:
+      # ------------------------------------------------------------------
+      # Step 1: Fetch the project node ID and the IDs of the status field
+      #         options (Triage / Done) that we will assign to items.
+      # ------------------------------------------------------------------
+      - name: Fetch project metadata
+        id: project
+        run: |
+          PROJECT_DATA=$(gh api graphql -f query='
+            query($org: String!, $number: Int!) {
+              organization(login: $org) {
+                projectV2(number: $number) {
+                  id
+                  fields(first: 20) {
+                    nodes {
+                      ... on ProjectV2SingleSelectField {
+                        id
+                        name
+                        options { id name }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' -f org="$PROJECT_ORG" -F number="$PROJECT_NUMBER")
+
+          PROJECT_ID=$(echo "$PROJECT_DATA" \
+            | jq -r '.data.organization.projectV2.id')
+
+          STATUS_FIELD=$(echo "$PROJECT_DATA" \
+            | jq -r --arg name "${{ inputs.status-field-name }}" \
+              '.data.organization.projectV2.fields.nodes[]
+               | select(.name == $name)')
+
+          FIELD_ID=$(echo "$STATUS_FIELD" | jq -r '.id')
+
+          TRIAGE_OPTION_ID=$(echo "$STATUS_FIELD" \
+            | jq -r --arg label "${{ inputs.status-triage }}" \
+              '.options[] | select(.name == $label) | .id')
+
+          DONE_OPTION_ID=$(echo "$STATUS_FIELD" \
+            | jq -r --arg label "${{ inputs.status-done }}" \
+              '.options[] | select(.name == $label) | .id')
+
+          echo "PROJECT_ID=$PROJECT_ID"               >> "$GITHUB_OUTPUT"
+          echo "FIELD_ID=$FIELD_ID"                   >> "$GITHUB_OUTPUT"
+          echo "TRIAGE_OPTION_ID=$TRIAGE_OPTION_ID"   >> "$GITHUB_OUTPUT"
+          echo "DONE_OPTION_ID=$DONE_OPTION_ID"       >> "$GITHUB_OUTPUT"
+
+          echo "Project: $PROJECT_ID | Field: $FIELD_ID"
+          echo "Triage option: $TRIAGE_OPTION_ID | Done option: $DONE_OPTION_ID"
+
+      # ------------------------------------------------------------------
+      # Step 2 (opened / reopened):
+      #   addProjectV2ItemById is idempotent — re-adding an existing issue
+      #   returns its existing item rather than creating a duplicate.
+      #   After adding (or finding), reset the status to Triage.
+      # ------------------------------------------------------------------
+      - name: Add issue to project and set status to Triage
+        if: env.EVENT_ACTION == 'opened' || env.EVENT_ACTION == 'reopened'
+        run: |
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {
+                projectId: $projectId
+                contentId: $contentId
+              }) {
+                item { id }
+              }
+            }
+          ' \
+            -f projectId="${{ steps.project.outputs.PROJECT_ID }}" \
+            -f contentId="$ISSUE_NODE_ID" \
+            | jq -r '.data.addProjectV2ItemById.item.id')
+
+          echo "Project item: $ITEM_ID"
+
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId:    $itemId
+                fieldId:   $fieldId
+                value:     { singleSelectOptionId: $optionId }
+              }) {
+                projectV2Item { id }
+              }
+            }
+          ' \
+            -f projectId="${{ steps.project.outputs.PROJECT_ID }}" \
+            -f itemId="$ITEM_ID" \
+            -f fieldId="${{ steps.project.outputs.FIELD_ID }}" \
+            -f optionId="${{ steps.project.outputs.TRIAGE_OPTION_ID }}" \
+            > /dev/null
+
+          echo "Status set to '${{ inputs.status-triage }}' for $ISSUE_URL"
+
+      # ------------------------------------------------------------------
+      # Step 3 (closed): Locate the project item for this issue, then
+      #   set its status to Done.
+      #   Paginates through all project items to support large boards.
+      # ------------------------------------------------------------------
+      - name: Find existing project item for this issue
+        id: find-item
+        if: env.EVENT_ACTION == 'closed'
+        run: |
+          ITEM_ID=""
+          CURSOR=""
+
+          while true; do
+            PAGE=$(gh api graphql \
+              -f query='
+                query($projectId: ID!, $cursor: String) {
+                  node(id: $projectId) {
+                    ... on ProjectV2 {
+                      items(first: 100, after: $cursor) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                          id
+                          content {
+                            ... on Issue { url }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ' \
+              -f projectId="${{ steps.project.outputs.PROJECT_ID }}" \
+              -f cursor="$CURSOR")
+
+            ITEM_ID=$(echo "$PAGE" \
+              | jq -r --arg url "$ISSUE_URL" \
+                '.data.node.items.nodes[]
+                 | select(.content.url == $url)
+                 | .id')
+
+            if [ -n "$ITEM_ID" ]; then
+              break
+            fi
+
+            HAS_NEXT=$(echo "$PAGE" \
+              | jq -r '.data.node.items.pageInfo.hasNextPage')
+            [ "$HAS_NEXT" == "true" ] || break
+
+            CURSOR=$(echo "$PAGE" \
+              | jq -r '.data.node.items.pageInfo.endCursor')
+          done
+
+          if [ -z "$ITEM_ID" ]; then
+            echo "WARNING: Issue $ISSUE_URL not found in project — skipping update."
+          else
+            echo "Found project item: $ITEM_ID"
+          fi
+
+          echo "ITEM_ID=$ITEM_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Update status to Done
+        if: env.EVENT_ACTION == 'closed' && steps.find-item.outputs.ITEM_ID != ''
+        run: |
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId:    $itemId
+                fieldId:   $fieldId
+                value:     { singleSelectOptionId: $optionId }
+              }) {
+                projectV2Item { id }
+              }
+            }
+          ' \
+            -f projectId="${{ steps.project.outputs.PROJECT_ID }}" \
+            -f itemId="${{ steps.find-item.outputs.ITEM_ID }}" \
+            -f fieldId="${{ steps.project.outputs.FIELD_ID }}" \
+            -f optionId="${{ steps.project.outputs.DONE_OPTION_ID }}" \
+            > /dev/null
+
+          echo "Status updated to '${{ inputs.status-done }}' for $ISSUE_URL"
