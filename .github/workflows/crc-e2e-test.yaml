@@ -1,0 +1,149 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2025,2026                                     |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: CRC End to End Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      operator-version:
+        description: "Operator version"
+        required: true
+        type: string
+      operator-channel:
+        description: "Operator channel"
+        required: true
+        type: string
+
+permissions: read-all
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Remove unwanted stuff
+        run: |
+          # According to your needs
+          #sudo rm -rf /usr/share/dotnet
+          #sudo rm -rf /usr/local/lib/android
+
+      - name: Set up CRC
+        uses: crc-org/crc-github-action@v1
+
+      - name: Update global pull secret for ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          REGISTRY: ghcr.io/ibm-aiu
+        run: |
+          # Create temporary files
+          GPS_FILE=$(mktemp)
+          REG_AUTH_FILE=$(mktemp -u)
+          NEW_GPS_FILE=$(mktemp)
+          AUTH_VALUE_FILE=$(mktemp)
+          
+          # Get current global pull secret
+          oc get secret/pull-secret -n openshift-config --template='{{index .data ".dockerconfigjson" | base64decode}}' > ${GPS_FILE}
+          
+          # Create registry auth
+          oc registry login --registry="${REGISTRY}" --auth-basic="${GHCR_USERNAME}:${GHCR_TOKEN}" --to=${REG_AUTH_FILE}
+          
+          # Extract auth value
+          cat ${REG_AUTH_FILE} | jq -r ".auths[\"${REGISTRY}\"].auth" > ${AUTH_VALUE_FILE}
+          
+          # Merge auth into global pull secret
+          jq ".auths |= .+ {\"${REGISTRY}\":{\"auth\": \"$(cat ${AUTH_VALUE_FILE})\"}}" < ${GPS_FILE} > ${NEW_GPS_FILE}
+          
+          # Update global pull secret
+          oc set data secret/pull-secret -n openshift-config --from-file=.dockerconfigjson=${NEW_GPS_FILE}
+          
+          # Clean up temporary files
+          rm -f ${GPS_FILE} ${REG_AUTH_FILE} ${NEW_GPS_FILE} ${AUTH_VALUE_FILE}
+          
+          echo "Global pull secret updated successfully"
+
+      - name: Create spyre-operator namespace and operator group
+        run: |
+          oc new-project spyre-operator
+          cat <<EOF | oc apply -f -
+          apiVersion: operators.coreos.com/v1
+          kind: OperatorGroup
+          metadata:
+            name: spyre-operator-group
+            namespace: spyre-operator
+          EOF
+
+      - name: Deploy catalog source
+        run: |
+          cat <<EOF | oc create -f -
+          apiVersion: operators.coreos.com/v1alpha1
+          kind: CatalogSource
+          metadata:
+            name: ibm-spyre-operators
+            namespace: openshift-marketplace
+          spec:
+            displayName: IBM Spyre Operator
+            publisher: IBM
+            sourceType: grpc
+            image: ghcr.io/ibm-aiu/spyre-operator-catalog:${{ inputs.operator-version }}
+            updateStrategy:
+              registryPoll:
+                interval: 10m
+          EOF
+
+      - name: Deploy operator
+        run: |
+          cat <<EOF | oc create -f -
+          apiVersion: operators.coreos.com/v1alpha1
+          kind: Subscription
+          metadata:
+            name: ibm-spyre-operator
+            namespace: spyre-operator
+          spec:
+            channel: ${{ inputs.operator-channel }}
+            name: ibm-spyre-operator
+            source: ibm-spyre-operators
+            sourceNamespace: openshift-marketplace
+          EOF
+
+      - name: Wait for CatalogSource to be ready
+        run: |
+          echo "Waiting for CatalogSource to be ready..."
+          timeout 300 bash -c 'until oc get catalogsource ibm-spyre-operators -n openshift-marketplace -o jsonpath="{.status.connectionState.lastObservedState}" | grep -q "READY"; do echo "Waiting..."; sleep 5; done'
+          echo "CatalogSource is ready"
+
+      - name: Wait for operator installation
+        run: |
+          echo "Waiting for operator CSV to be created..."
+          timeout 300 bash -c 'until oc get csv -n spyre-operator | grep -q ibm-spyre-operator; do echo "Waiting for CSV..."; sleep 5; done'
+          
+          echo "Waiting for operator to be ready..."
+          CSV_NAME=$(oc get csv -n spyre-operator -o jsonpath='{.items[0].metadata.name}')
+          echo "CSV Name: $CSV_NAME"
+          
+          timeout 300 bash -c "until oc get csv $CSV_NAME -n spyre-operator -o jsonpath='{.status.phase}' | grep -q 'Succeeded'; do echo 'Waiting for operator to be ready...'; sleep 5; done"
+          echo "Operator is ready"
+
+      - name: Verify operator deployment
+        run: |
+          echo "=== Operator Deployment Status ==="
+          echo ""
+          echo "CatalogSource:"
+          oc get catalogsource ibm-spyre-operators -n openshift-marketplace -o yaml
+          echo ""
+          echo "Subscription:"
+          oc get subscription ibm-spyre-operator -n spyre-operator -o yaml
+          echo ""
+          echo "CSV:"
+          oc get csv -n spyre-operator
+          echo ""
+          echo "Operator Pods:"
+          oc get pods -n spyre-operator
+          echo ""
+          echo "Operator Deployment:"
+          oc get deployment -n spyre-operator
