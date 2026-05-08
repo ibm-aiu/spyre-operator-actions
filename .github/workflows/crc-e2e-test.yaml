@@ -57,11 +57,21 @@ jobs:
 
       - name: Set up CRC
         uses: crc-org/crc-github-action@v1
+        with:
+          preset: okd
+          memory: 15200
+          cpus: 16
+          disk: 128
+
+      - name: Setup admin context as default
+        run: |
+          oc auth can-i '*' '*' --all-namespaces
+          oc get namespaces
 
       - name: Update global pull secret for ghcr.io
         env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.CRC_PULL_SECRET }}
+          GHCR_USERNAME: USERNAME
           REGISTRY: ghcr.io/ibm-aiu
         run: |
           # Create temporary files
@@ -92,7 +102,10 @@ jobs:
 
       - name: Create spyre-operator namespace and operator group
         run: |
+          # Create namespace using oc new-project (OpenShift-specific)
           oc new-project spyre-operator
+
+          # Create OperatorGroup
           cat <<EOF | oc apply -f -
           apiVersion: operators.coreos.com/v1
           kind: OperatorGroup
@@ -125,11 +138,11 @@ jobs:
           apiVersion: operators.coreos.com/v1alpha1
           kind: Subscription
           metadata:
-            name: ibm-spyre-operator
+            name: spyre-operator
             namespace: spyre-operator
           spec:
             channel: ${{ steps.set-params.outputs.operator-channel }}
-            name: ibm-spyre-operator
+            name: spyre-operator
             source: ibm-spyre-operators
             sourceNamespace: openshift-marketplace
           EOF
@@ -137,19 +150,62 @@ jobs:
       - name: Wait for CatalogSource to be ready
         run: |
           echo "Waiting for CatalogSource to be ready..."
-          timeout 300 bash -c 'until oc get catalogsource ibm-spyre-operators -n openshift-marketplace -o jsonpath="{.status.connectionState.lastObservedState}" | grep -q "READY"; do echo "Waiting..."; sleep 5; done'
+          timeout 300 bash -c '
+            until oc get catalogsource ibm-spyre-operators -n openshift-marketplace -o jsonpath="{.status.connectionState.lastObservedState}" | grep -q "READY"; do
+              echo "=== CatalogSource Status ==="
+              oc get catalogsource ibm-spyre-operators -n openshift-marketplace -o yaml | grep -A 5 "status:"
+              echo ""
+              echo "=== CatalogSource Pods ==="
+              oc get pods -n openshift-marketplace -l olm.catalogSource=ibm-spyre-operators
+              echo ""
+              sleep 10
+            done
+          '
           echo "CatalogSource is ready"
 
       - name: Wait for operator installation
         run: |
           echo "Waiting for operator CSV to be created..."
-          timeout 300 bash -c 'until oc get csv -n spyre-operator | grep -q ibm-spyre-operator; do echo "Waiting for CSV..."; sleep 5; done'
+          timeout 300 bash -c '
+            until oc get csv -n spyre-operator 2>/dev/null | grep -q spyre-operator; do
+              echo "=== Checking for CSV ==="
+              oc get csv -n spyre-operator 2>/dev/null || echo "No CSVs found yet"
+              echo ""
+              echo "=== Subscription Status ==="
+              oc get subscription spyre-operator -n spyre-operator -o yaml 2>/dev/null | grep -A 10 "status:" || echo "Subscription not ready"
+              echo ""
+              echo "=== Pods in spyre-operator namespace ==="
+              oc get pods -n spyre-operator 2>/dev/null || echo "No pods yet"
+              echo ""
+              sleep 10
+            done
+          '
           
-          echo "Waiting for operator to be ready..."
+          echo "CSV found, waiting for operator to be ready..."
           CSV_NAME=$(oc get csv -n spyre-operator -o jsonpath='{.items[0].metadata.name}')
           echo "CSV Name: $CSV_NAME"
           
-          timeout 300 bash -c "until oc get csv $CSV_NAME -n spyre-operator -o jsonpath='{.status.phase}' | grep -q 'Succeeded'; do echo 'Waiting for operator to be ready...'; sleep 5; done"
+          timeout 300 bash -c "
+            until oc get csv $CSV_NAME -n spyre-operator -o jsonpath='{.status.phase}' | grep -q 'Succeeded'; do
+              echo '=== CSV Status ==='
+              oc get csv $CSV_NAME -n spyre-operator -o jsonpath='{.status.phase}'
+              echo ''
+              echo '=== Operator Pods ==='
+              oc get pods -n spyre-operator
+              echo ''
+              echo '=== Operator Deployments ==='
+              oc get deployments -n spyre-operator
+              echo ''
+              echo '=== Pod Details (if any pods exist) ==='
+              for pod in \$(oc get pods -n spyre-operator -o name 2>/dev/null); do
+                echo \"--- Describing \$pod ---\"
+                oc describe \$pod -n spyre-operator
+                echo \"\"
+              done
+              echo ''
+              sleep 10
+            done
+          "
           echo "Operator is ready"
 
       - name: Verify operator deployment
@@ -160,7 +216,7 @@ jobs:
           oc get catalogsource ibm-spyre-operators -n openshift-marketplace -o yaml
           echo ""
           echo "Subscription:"
-          oc get subscription ibm-spyre-operator -n spyre-operator -o yaml
+          oc get subscription spyre-operator -n spyre-operator -o yaml
           echo ""
           echo "CSV:"
           oc get csv -n spyre-operator
