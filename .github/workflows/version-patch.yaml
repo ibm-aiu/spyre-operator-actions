@@ -18,6 +18,13 @@ on:
         required: false
         type: string
         default: 'v1.38.0'
+    outputs:
+      branch_name:
+        description: 'The created branch name for the version patch'
+        value: ${{ jobs.version-patch.outputs.branch_name }}
+      new_version:
+        description: 'The new version number'
+        value: ${{ jobs.version-patch.outputs.new_version }}
 
 permissions:
   contents: write
@@ -26,6 +33,9 @@ permissions:
 jobs:
   version-patch:
     runs-on: ubuntu-latest
+    outputs:
+      branch_name: ${{ steps.set_branch_name.outputs.branch_name }}
+      new_version: ${{ steps.increment_version.outputs.new_version }}
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -146,13 +156,14 @@ jobs:
 
     - name: Create Pull Request
       id: create_pr
-      uses: peter-evans/create-pull-request@v6
+      uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         branch: version-patch/v${{ steps.increment_version.outputs.new_version }}
         commit-message: "chore: bump version to ${{ steps.increment_version.outputs.new_version
           }}"
         signoff: true
+        sign-commits: true
         base: main
         title: "chore: bump version to v${{ steps.increment_version.outputs.new_version
           }}"
@@ -170,6 +181,13 @@ jobs:
           chore
           version-bump
 
+    - name: Set branch name output
+      id: set_branch_name
+      run: |
+        BRANCH_NAME="version-patch/v${{ steps.increment_version.outputs.new_version }}"
+        echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+        echo "Branch name: ${BRANCH_NAME}"
+
     - name: Summary
       run: |
         echo "## Version Patch Summary" >> $GITHUB_STEP_SUMMARY
@@ -177,7 +195,11 @@ jobs:
         echo "- **Previous Version**: ${{ steps.current_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
         echo "- **New Version**: ${{ steps.increment_version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Version Bump Type**: ${{ github.event.inputs.version_bump }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Branch**: version-patch/v${{ steps.increment_version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: ${{ steps.set_branch_name.outputs.branch_name }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Pull Request**: ${{ steps.create_pr.outputs.pull-request-url }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "A pull request has been created to merge the version bump into main." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Reusable Outputs" >> $GITHUB_STEP_SUMMARY
+        echo "- \`branch_name\`: ${{ steps.set_branch_name.outputs.branch_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- \`new_version\`: ${{ steps.increment_version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
