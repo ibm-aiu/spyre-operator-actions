@@ -133,9 +133,8 @@ jobs:
         docker builder prune -af || true
         docker buildx prune -af || true
 
-        docker buildx ls
-
-        for b in $(docker buildx ls --format '{{.Name}}'); do
+        # Remove builder other than default
+        for b in $(docker buildx ls --format '{{.Name}}' | sort -u); do
           if [ "$b" != "default" ]; then
             echo "Removing builder $b"
             docker buildx rm -f "$b" || true
