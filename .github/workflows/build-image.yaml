@@ -133,13 +133,18 @@ jobs:
         docker builder prune -af || true
         docker buildx prune -af || true
 
+        # docker builder list 
+        docker buildx ls
+
         # Remove inactive builders
-        docker buildx rm --all-inactive || true
+        yes | docker buildx rm --all-inactive || true
 
         echo "=== Disk after cleanup ==="
         df -h
         echo "=== Docker usage after cleanup ==="
         docker system df || true
+        echo "==== Builder list after cleanup ===="
+        docker buildx ls
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
