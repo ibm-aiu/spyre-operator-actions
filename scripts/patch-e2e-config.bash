@@ -71,25 +71,25 @@ function patch_test_config() {
 	# Publicly-unavailable tag patch
 
 	if [[ -n ${DEVICE_PLUGIN_INIT_TAG} ]]; then
-		${YQ} eval -i '.devicePluginInit.version=strenv(DEVICE_PLUGIN_INIT_TAG)' ${TEST_CONFIG}
+		${YQ_CMD} eval -i '.devicePluginInit.version=strenv(DEVICE_PLUGIN_INIT_TAG)' ${TEST_CONFIG}
 	fi
 
 	if [[ -n ${EXPORTER_TAG} ]]; then
-		${YQ} eval -i '.exporter.version=strenv(EXPORTER_TAG)' ${TEST_CONFIG}
-		${YQ} eval -i '.mockUser.version=strenv(EXPORTER_TAG)' ${TEST_CONFIG}
+		${YQ_CMD} eval -i '.exporter.version=strenv(EXPORTER_TAG)' ${TEST_CONFIG}
+		${YQ_CMD} eval -i '.mockUser.version=strenv(EXPORTER_TAG)' ${TEST_CONFIG}
 	fi
 
 	if [[ -n ${CARD_MGMT_TAG} ]]; then
-		${YQ} eval -i '.cardManagement.version=strenv(CARD_MGMT_TAG)' ${TEST_CONFIG}
+		${YQ_CMD} eval -i '.cardManagement.version=strenv(CARD_MGMT_TAG)' ${TEST_CONFIG}
 	fi
 
 	if [[ -n ${CARD_MGMT_RUNNER_IMAGE} ]]; then
-		${YQ} eval -i '.cardManagement.config.pfRunnerImage=strenv(CARD_MGMT_RUNNER_IMAGE)' ${TEST_CONFIG}
-		${YQ} eval -i '.cardManagement.config.vfRunnerImage=strenv(CARD_MGMT_RUNNER_IMAGE)' ${TEST_CONFIG}
+		${YQ_CMD} eval -i '.cardManagement.config.pfRunnerImage=strenv(CARD_MGMT_RUNNER_IMAGE)' ${TEST_CONFIG}
+		${YQ_CMD} eval -i '.cardManagement.config.vfRunnerImage=strenv(CARD_MGMT_RUNNER_IMAGE)' ${TEST_CONFIG}
 	fi
 
 	if [[ -n ${SPYRE_FILTER} ]]; then
-		${YQ} eval -i '.cardManagement.config.spyreFilter=strenv(SPYRE_FILTER)' ${TEST_CONFIG}
+		${YQ_CMD} eval -i '.cardManagement.config.spyreFilter=strenv(SPYRE_FILTER)' ${TEST_CONFIG}
 	fi
 
 	# Registry patch
