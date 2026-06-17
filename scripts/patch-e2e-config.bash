@@ -62,6 +62,10 @@ function patch_test_config() {
 		${YQ_CMD} '.healthChecker.version=strenv(HEALTH_CHECKER_TAG)' ${TEST_CONFIG}
 	fi
 
+	if [[ -n ${DRA_DRIVER_TAG} ]]; then
+		${YQ_CMD} '.draDriver.version=strenv(DRA_DRIVER_TAG)' ${TEST_CONFIG}
+	fi
+
 	if [[ -n ${REGISTRY} ]]; then
 		echo "Replacing docker.io/spyre-operator with ${REGISTRY}"
 		# Replace docker.io/spyre-operator with REGISTRY in all image references
@@ -87,6 +91,9 @@ function patch_test_config() {
 				;;
 			"spyre-health-checker")
 				COMPONENT="healthChecker"
+				;;
+			"dra-driver-spyre")
+				COMPONENT="draDriver"
 				;;
 			*)
 				echo "Warning: Unknown repository ${TEST_REPO}, skipping registry update"
