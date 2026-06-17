@@ -123,6 +123,9 @@ jobs:
         
         yq eval '.healthChecker.version = "${{ steps.component_versions.outputs.spyre-health-checker_version }}"' -i release-artifacts.yaml
         echo "  Updated healthChecker to ${{ steps.component_versions.outputs.spyre-health-checker_version }}"
+
+        yq eval '.draDriver.version = "${{ steps.component_versions.outputs.dra-driver-spyre_version }}"' -i release-artifacts.yaml
+        echo "  Updated draDriver to ${{ steps.component_versions.outputs.dra-driver-spyre_version }}"
         
         yq eval '.exporter.version = "${{ steps.component_versions.outputs.spyre-exporter_version }}"' -i release-artifacts.yaml
         echo "  Updated exporter to ${{ steps.component_versions.outputs.spyre-exporter_version }}"
