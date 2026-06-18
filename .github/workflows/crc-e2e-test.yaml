@@ -295,15 +295,24 @@ jobs:
         sudo -su $USER crc stop -f
         sleep 10
         sudo -su $USER crc start
-        while : ; do
+        MAX_RETRIES=5
+        RETRY_COUNT=0
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
             if oc login -u kubeadmin -p $(cat ~/.crc/machines/crc/kubeadmin-password) https://api.crc.testing:6443 --insecure-skip-tls-verify=true ; then
                 echo "Successful re-login into openshift"
                 break
             else
-                echo "Retrying login..."
-                sleep 5
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                echo "Retrying login... (attempt $RETRY_COUNT/$MAX_RETRIES)"
+                sleep 180
             fi
         done
+        
+        if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+            echo "ERROR: Failed to login to CRC after $MAX_RETRIES attempts (5 minutes)"
+            echo "CRC failed to restart properly after MachineConfig application"
+            exit 1
+        fi
         oc wait clusteroperator/image-registry --for=condition=Available=True --timeout=10m
         oc get po -n openshift-marketplace
         oc get mcp
@@ -322,6 +331,7 @@ jobs:
       working-directory: spyre-operator
       run: |
         #!/bin/bash -e
+        set -o pipefail
 
         # Run the actual tests
         make e2e-test 2>&1 | tee e2e-test-output.log

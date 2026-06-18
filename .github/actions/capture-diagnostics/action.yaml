@@ -65,5 +65,3 @@ runs:
         echo "" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
         echo "=== Recent events in ${NAMESPACE} namespace ===" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
         oc get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' | grep -i "${COMPONENT}" >> "${LOG_DIRECTORY}/${COMPONENT}-describe.log" 2>&1 || echo "No events found for ${COMPONENT}" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
-
-# Made with Bob
