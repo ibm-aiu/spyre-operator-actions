@@ -1,0 +1,127 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2025,2026                                     |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: Auto Label PR from Title
+
+on:
+  workflow_call:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  label-pr:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Determine and sync labels
+      id: sync_labels
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PR_TITLE: ${{ github.event.pull_request.title }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        # Define all possible auto-applied labels
+        AUTO_LABELS=("enhancement" "semver-major" "bug" "chore")
+        
+        # Get current PR labels
+        CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '.labels[].name')
+        
+        echo "PR Title: $PR_TITLE"
+        echo "Current labels: $CURRENT_LABELS"
+        
+        # Determine which label should be applied based on PR title
+        DESIRED_LABEL=""
+        
+        # Check for feat(major) first (more specific)
+        if echo "$PR_TITLE" | grep -q "^feat(major)"; then
+          DESIRED_LABEL="semver-major"
+        # Check for feat (enhancement)
+        elif echo "$PR_TITLE" | grep -q "^feat"; then
+          DESIRED_LABEL="enhancement"
+        # Check for fix (bug)
+        elif echo "$PR_TITLE" | grep -q "^fix"; then
+          DESIRED_LABEL="bug"
+        # Check for ci or chore (chore)
+        elif echo "$PR_TITLE" | grep -q "^ci\|^chore"; then
+          DESIRED_LABEL="chore"
+        fi
+        
+        echo "Desired label: $DESIRED_LABEL"
+        
+        # Check if desired label is already present
+        LABEL_EXISTS=false
+        if [ -n "$DESIRED_LABEL" ] && echo "$CURRENT_LABELS" | grep -q "^${DESIRED_LABEL}$"; then
+          LABEL_EXISTS=true
+          echo "Label '$DESIRED_LABEL' already exists, no changes needed"
+        fi
+        
+        # Only proceed if label doesn't exist or needs to be changed
+        if [ "$LABEL_EXISTS" = false ]; then
+          # Remove any other auto-applied labels
+          LABELS_REMOVED=""
+          for label in "${AUTO_LABELS[@]}"; do
+            if [ "$label" != "$DESIRED_LABEL" ] && echo "$CURRENT_LABELS" | grep -q "^${label}$"; then
+              echo "Removing label: $label"
+              gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "$label" || true
+              LABELS_REMOVED="$LABELS_REMOVED $label"
+            fi
+          done
+          
+          # Add the desired label if one was determined
+          if [ -n "$DESIRED_LABEL" ]; then
+            echo "Adding label: $DESIRED_LABEL"
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "$DESIRED_LABEL"
+          fi
+          
+          echo "labels_removed=$(echo $LABELS_REMOVED | xargs)" >> $GITHUB_OUTPUT
+          echo "label_added=$DESIRED_LABEL" >> $GITHUB_OUTPUT
+          echo "changed=true" >> $GITHUB_OUTPUT
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "label_added=$DESIRED_LABEL" >> $GITHUB_OUTPUT
+          echo "labels_removed=" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Summary
+      env:
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_TITLE: ${{ github.event.pull_request.title }}
+        CHANGED: ${{ steps.sync_labels.outputs.changed }}
+        LABEL_ADDED: ${{ steps.sync_labels.outputs.label_added }}
+        LABELS_REMOVED: ${{ steps.sync_labels.outputs.labels_removed }}
+      run: |
+        echo "## Auto Label Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**PR #${PR_NUMBER}**: ${PR_TITLE}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$CHANGED" = "true" ]; then
+          echo "### Changes Made:" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -n "$LABELS_REMOVED" ]; then
+            echo "**Removed labels:** $LABELS_REMOVED" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -n "$LABEL_ADDED" ]; then
+            echo "**Added label:** \`$LABEL_ADDED\`" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          if [ -n "$LABEL_ADDED" ]; then
+            echo "✅ **No changes needed** - Label \`$LABEL_ADDED\` already applied" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ **No label applied** - PR title doesn't match any prefix" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### PR Title Prefixes:" >> $GITHUB_STEP_SUMMARY
+        echo "- \`feat\` → enhancement" >> $GITHUB_STEP_SUMMARY
+        echo "- \`feat(major)\` → semver-major" >> $GITHUB_STEP_SUMMARY
+        echo "- \`fix\` → bug" >> $GITHUB_STEP_SUMMARY
+        echo "- \`ci\` or \`chore\` → chore" >> $GITHUB_STEP_SUMMARY
