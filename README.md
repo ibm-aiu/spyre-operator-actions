@@ -156,6 +156,7 @@ uses: ibm-aiu/spyre-operator-actions/.github/workflows/version-patch.yaml@main
 with:
   version_bump: ${{ inputs.version_bump }}  # Required: minor or major
   operator_sdk_version: 'v1.38.0'           # Optional: operator-sdk version (default: 'v1.38.0')
+  allow_skew_version: false                 # Optional: allow version skew (default: false)
 ```
 
 **Inputs:**
@@ -167,6 +168,12 @@ with:
   - Type: string
   - Default: `'v1.38.0'`
   - Only used for spyre-operator projects
+- `allow_skew_version` (optional): Allow version skew between components and operator
+  - Type: boolean
+  - Default: `false`
+  - When `false`: All component versions must match the new operator version (strict validation)
+  - When `true`: Components can have different versions than the operator
+  - Only applies to spyre-operator projects
 
 **Permissions:**
 
@@ -183,17 +190,26 @@ with:
 
 When the workflow detects that the repository name is `spyre-operator`, it automatically performs additional steps after incrementing the version:
 
-1. **Retrieve component versions**: Fetches the latest VERSION from dependent components:
+1. **Retrieve and validate component versions**: Fetches the latest VERSION from each component's default branch:
    - spyre-device-plugin
-   - spyre-scheduler
+   - spyre-scheduler-plugins
    - spyre-webhook-validator
    - spyre-health-checker
-   - spyre-exporter
    - dra-driver-spyre
    
-   All retrieved versions automatically get a `-dev` suffix appended. If a component's VERSION file is not found, it uses `$(cat VERSION)-dev` as a fallback version.
+   **Version Retrieval:**
+   - Uses GitHub API to determine each component's default branch (e.g., `main`, `master`, or custom branches)
+   - Fetches VERSION file from the detected default branch
+   - All retrieved versions automatically get a `-dev` suffix appended
+   - **Fails if VERSION file cannot be retrieved** (no fallback version)
+   
+   **Version Validation (when `allow_skew_version: false`):**
+   - Validates that each component's VERSION matches the new operator version
+   - Workflow fails with clear error messages if any version mismatch is detected
+   - Ensures version consistency across all components
+   - Can be disabled by setting `allow_skew_version: true` to allow version differences
 
-2. **Update release-artifacts.yaml**: Uses `yq` to update component versions in the release-artifacts.yaml file with the retrieved versions (or fallback versions) from step 1.
+2. **Update release-artifacts.yaml**: Uses `yq` to update component versions in the release-artifacts.yaml file with the retrieved versions from step 1.
 
 3. **Install operator-sdk**: Downloads and installs the specified version of operator-sdk
 
