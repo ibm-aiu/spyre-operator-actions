@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: 'v1.38.0'
+      allow_skew_version:
+        description: 'Allow version skew between components and operator (default: false)'
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       version_bump:
@@ -30,6 +35,11 @@ on:
         required: false
         type: string
         default: 'v1.38.0'
+      allow_skew_version:
+        description: 'Allow version skew between components and operator (default: false)'
+        required: false
+        type: boolean
+        default: false
     outputs:
       branch_name:
         description: 'The created branch name for the version patch'
@@ -89,31 +99,66 @@ jobs:
           echo "This is a spyre-operator project"
         fi
 
-    - name: Retrieve component versions
+    - name: Retrieve and validate component versions
       if: steps.check_project.outputs.is_spyre_operator == 'true'
       id: component_versions
       env:
-        BRANCH_NAME: ${{ github.ref_name }}
+        NEW_VERSION: ${{ steps.increment_version.outputs.new_version }}
+        ALLOW_SKEW: ${{ inputs.allow_skew_version }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        COMPONENTS=("spyre-device-plugin" "spyre-scheduler" "spyre-webhook-validator" "spyre-health-checker" "spyre-exporter" "dra-driver-spyre")
-        FALLBACK_VERSION="$(cat VERSION)-dev"
+        COMPONENTS=("spyre-device-plugin" "spyre-scheduler-plugins" "spyre-webhook-validator" "spyre-health-checker" "dra-driver-spyre")
+        VALIDATION_FAILED=false
         
         echo "Retrieving component versions..."
-        echo "Using branch: ${BRANCH_NAME}"
-        echo "Fallback version: ${FALLBACK_VERSION}"
+        echo "Allow version skew: ${ALLOW_SKEW}"
+
+        if [ "${ALLOW_SKEW}" = "false" ]; then
+          echo "Version validation enabled - all components must match version: ${NEW_VERSION}"
+        fi
+
         for COMPONENT in "${COMPONENTS[@]}"; do
-          VERSION_URL="https://raw.githubusercontent.com/ibm-aiu/${COMPONENT}/refs/heads/${BRANCH_NAME}/VERSION"
           echo "Checking ${COMPONENT}..."
           
+          # Get the default branch for this component repository
+          DEFAULT_BRANCH=$(curl -sSf -H "Authorization: token ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/ibm-aiu/${COMPONENT}" | \
+            jq -r '.default_branch' 2>/dev/null)
+          
+          if [ -z "${DEFAULT_BRANCH}" ] || [ "${DEFAULT_BRANCH}" = "null" ]; then
+            echo "::error::Could not determine default branch for ${COMPONENT}"
+            VALIDATION_FAILED=true
+            continue
+          fi
+          
+          echo "  Using default branch: ${DEFAULT_BRANCH}"
+          
+          VERSION_URL="https://raw.githubusercontent.com/ibm-aiu/${COMPONENT}/refs/heads/${DEFAULT_BRANCH}/VERSION"
+
           if VERSION=$(curl -sSf "${VERSION_URL}" 2>/dev/null); then
             VERSION_WITH_DEV="${VERSION}-dev"
             echo "${COMPONENT}_version=${VERSION_WITH_DEV}" >> $GITHUB_OUTPUT
-            echo "  ${COMPONENT}: ${VERSION_WITH_DEV}"
+            echo "  ${COMPONENT}: ${VERSION_WITH_DEV} (from ${DEFAULT_BRANCH})"
+
+            # Validate version if skew is not allowed
+            if [ "${ALLOW_SKEW}" = "false" ] && [ "${VERSION}" != "${NEW_VERSION}" ]; then
+              echo "::error::Version mismatch for ${COMPONENT}: expected ${NEW_VERSION}, got ${VERSION}"
+              VALIDATION_FAILED=true
+            fi
           else
-            echo "  ${COMPONENT}: VERSION file not found, using fallback ${FALLBACK_VERSION}"
-            echo "${COMPONENT}_version=${FALLBACK_VERSION}" >> $GITHUB_OUTPUT
+            echo "::error::VERSION file not found for ${COMPONENT} on branch ${DEFAULT_BRANCH}"
+            VALIDATION_FAILED=true
           fi
         done
+
+        if [ "${VALIDATION_FAILED}" = "true" ]; then
+          echo "::error::Version validation failed. Component versions must match NEW_VERSION (${NEW_VERSION}) when allow_skew_version is false."
+          exit 1
+        fi
+
+        if [ "${ALLOW_SKEW}" = "false" ]; then
+          echo "✓ All component versions validated successfully"
+        fi
 
     - name: Update release-artifacts.yaml with component versions
       if: steps.check_project.outputs.is_spyre_operator == 'true'
@@ -124,14 +169,13 @@ jobs:
         fi
         
         echo "Updating release-artifacts.yaml with component versions..."
-        
+
         # Update component versions (always set, either from GitHub or fallback)
         yq eval '.devicePlugin.version = "${{ steps.component_versions.outputs.spyre-device-plugin_version }}"' -i release-artifacts.yaml
-        yq eval '.devicePluginInit.version = "${{ steps.component_versions.outputs.spyre-device-plugin_version }}"' -i release-artifacts.yaml
-        echo "  Updated devicePlugin and devicePluginInit to ${{ steps.component_versions.outputs.spyre-device-plugin_version }}"
-        
-        yq eval '.scheduler.version = "${{ steps.component_versions.outputs.spyre-scheduler_version }}"' -i release-artifacts.yaml
-        echo "  Updated scheduler to ${{ steps.component_versions.outputs.spyre-scheduler_version }}"
+        echo "  Updated devicePlugin to ${{ steps.component_versions.outputs.spyre-device-plugin_version }}"
+
+        yq eval '.scheduler.version = "${{ steps.component_versions.outputs.spyre-scheduler-plugins_version }}"' -i release-artifacts.yaml
+        echo "  Updated scheduler to ${{ steps.component_versions.outputs.spyre-scheduler-plugins_version }}"
         
         yq eval '.podValidator.version = "${{ steps.component_versions.outputs.spyre-webhook-validator_version }}"' -i release-artifacts.yaml
         echo "  Updated podValidator to ${{ steps.component_versions.outputs.spyre-webhook-validator_version }}"
@@ -141,9 +185,6 @@ jobs:
 
         yq eval '.draDriver.version = "${{ steps.component_versions.outputs.dra-driver-spyre_version }}"' -i release-artifacts.yaml
         echo "  Updated draDriver to ${{ steps.component_versions.outputs.dra-driver-spyre_version }}"
-        
-        yq eval '.exporter.version = "${{ steps.component_versions.outputs.spyre-exporter_version }}"' -i release-artifacts.yaml
-        echo "  Updated exporter to ${{ steps.component_versions.outputs.spyre-exporter_version }}"
 
         echo "release-artifacts.yaml update complete"
 
