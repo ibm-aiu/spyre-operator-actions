@@ -96,6 +96,9 @@ jobs:
           - arch: amd64
             platform: linux/amd64
             runner: ${{ inputs.runner }}
+          - arch: ppc64le
+            platform: linux/ppc64le
+            runner: "ubuntu-24.04-ppc64le-p10"
           - arch: s390x
             platform: linux/s390x
             runner:
