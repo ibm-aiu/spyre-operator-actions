@@ -213,7 +213,8 @@ jobs:
         docker buildx imagetools create \
         -t ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }} \
         ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}-amd64 \
-        ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}-s390x
+        ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}-s390x \
+        ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}-ppc64le
 
     - name: Inspect manifest
       run: |
