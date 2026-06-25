@@ -62,6 +62,8 @@ jobs:
         
       - name: Get version from VERSION file
         id: get_version
+        env:
+          SUFFIX: ${{ inputs.image_suffix }}
         run: |
           if [ ! -f VERSION ]; then
             echo "ERROR: VERSION file not found"
@@ -75,10 +77,10 @@ jobs:
           fi
 
           # Append -dev only if not already present
-          if [[ "$VERSION" == *"${{ inputs.image_suffix }}" ]]; then
+          if [[ "$VERSION" == *"$SUFFIX" ]]; then
             IMAGE_TAG="$VERSION"
           else
-            IMAGE_TAG="${VERSION}${{ inputs.image_suffix }}"
+            IMAGE_TAG="${VERSION}${SUFFIX}"
           fi
           
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -178,11 +180,13 @@ jobs:
           push: true
           tags: ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}-${{ matrix.arch }}
     - name: Summary
+      env:
+        IMAGE_BASE: ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}-${{ matrix.arch }}
       run: |
         echo "## Build Image Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "- **Version**: ${{ needs.metadata.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Image Tag**: ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}-${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image Tag**: ${IMAGE_BASE}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
     - name: Cleanup after build
       if: always() && matrix.arch == 's390x'
@@ -195,6 +199,8 @@ jobs:
       - build-image
 
     runs-on: ${{ inputs.runner }}
+    env:
+      IMAGE_BASE: ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}
 
     steps:
     - name: Log in to container registry
@@ -208,11 +214,10 @@ jobs:
       shell: bash
       run: |
         docker buildx imagetools create \
-        -t ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }} \
-        ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}-amd64 \
-        ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}-s390x
+        -t ${IMAGE_BASE} \
+        ${IMAGE_BASE}-amd64 \
+        ${IMAGE_BASE}-s390x
 
     - name: Inspect manifest
       run: |
-        docker buildx imagetools inspect \
-        ${{ inputs.registry }}/${{ inputs.image_name }}:${{ needs.metadata.outputs.image_tag }}
+        docker buildx imagetools inspect ${IMAGE_BASE}
