@@ -98,6 +98,9 @@ jobs:
           - arch: amd64
             platform: linux/amd64
             runner: ${{ inputs.runner }}
+          - arch: ppc64le
+            platform: linux/ppc64le
+            runner: "ubuntu-24.04-ppc64le-p10"
           - arch: s390x
             platform: linux/s390x
             runner:
@@ -216,7 +219,8 @@ jobs:
         docker buildx imagetools create \
         -t ${IMAGE_BASE} \
         ${IMAGE_BASE}-amd64 \
-        ${IMAGE_BASE}-s390x
+        ${IMAGE_BASE}-s390x \
+        ${IMAGE_BASE}-ppc64le
 
     - name: Inspect manifest
       run: |
