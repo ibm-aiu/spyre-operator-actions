@@ -121,8 +121,8 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Cleanup build resources (s390x only)
-      if: matrix.arch == 's390x'
+    - name: Cleanup build resources (persistent runners)
+      if: matrix.arch == 's390x' || matrix.arch == 'ppc64le'
       shell: bash
       run: |
         echo "=== Disk before cleanup ==="
@@ -199,7 +199,7 @@ jobs:
         echo "- **Image Tag**: ${IMAGE_BASE}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
     - name: Cleanup after build
-      if: always() && matrix.arch == 's390x'
+      if: always() && (matrix.arch == 's390x' || matrix.arch == 'ppc64le')
       run: |
         docker builder prune -af || true
         docker buildx prune -af || true
