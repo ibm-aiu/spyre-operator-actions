@@ -163,8 +163,9 @@ jobs:
       with:
         cleanup: true
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
+    - name: If a Go project, set it up
+      if: hashFiles('go.mod') != ''
+      uses: actions/setup-go@v6
       with:
         go-version-file: go.mod
         architecture: ${{ matrix.arch }}

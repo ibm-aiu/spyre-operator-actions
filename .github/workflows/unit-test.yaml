@@ -39,8 +39,10 @@ jobs:
         GH_TOKEN: ${{ secrets.gh-token || secrets.GITHUB_TOKEN }}
       run: |
         git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-    
-    - uses: actions/setup-go@v6
+
+    - name: If a Go project, set it up
+      if: hashFiles('go.mod') != ''
+      uses: actions/setup-go@v6
       with:
         go-version: ${{ inputs.go-version != '' && inputs.go-version || '' }}
         go-version-file: ${{ inputs.go-version == '' && 'go.mod' || '' }}
