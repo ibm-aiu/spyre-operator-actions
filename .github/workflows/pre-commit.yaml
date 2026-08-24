@@ -44,7 +44,8 @@ jobs:
       with:
         python-version: ${{ inputs.python-version }}
     
-    - name: Setup Go
+    - name: If a Go project, set it up
+      if: hashFiles('go.mod') != ''
       uses: actions/setup-go@v6
       with:
         go-version-file: 'go.mod'
@@ -55,6 +56,7 @@ jobs:
          echo "GOPRIVATE=${{ inputs.goprivate }}" >> $GITHUB_ENV
 
     - name: Run vendor
+      if: hashFiles('go.mod') != ''
       run: go mod vendor
     
     - uses: pre-commit/action@v3.0.1
