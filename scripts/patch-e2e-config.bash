@@ -79,6 +79,11 @@ function patch_test_config() {
 		${YQ_CMD} eval -i '.mockUser.version=strenv(EXPORTER_TAG)' ${TEST_CONFIG}
 	fi
 
+	if [[ -n ${EXPORTER_REGISTRY} ]]; then
+		${YQ_CMD} '.exporter.repository=strenv(EXPORTER_REGISTRY)' ${TEST_CONFIG}
+		${YQ_CMD} '.mockUser.repository=strenv(EXPORTER_REGISTRY)' ${TEST_CONFIG}
+	fi
+
 	if [[ -n ${CARD_MGMT_TAG} ]]; then
 		${YQ_CMD} eval -i '.cardManagement.version=strenv(CARD_MGMT_TAG)' ${TEST_CONFIG}
 	fi
