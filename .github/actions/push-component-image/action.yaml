@@ -1,0 +1,82 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: 'Push Component Image to CRC'
+description: 'Push a built component image (and spyre-operator bundle/catalog) to the CRC internal registry'
+
+inputs:
+  component-repo:
+    description: 'Component repository name built from the PR'
+    required: false
+  component-tag:
+    description: 'Image tag built for the component'
+    required: false
+  crc-registry:
+    description: 'CRC internal image registry hostname'
+    required: false
+    default: 'default-route-openshift-image-registry.apps-crc.testing'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Push test component image to CRC
+      shell: bash
+      env:
+        COMPONENT_REPO: ${{ inputs.component-repo }}
+        COMPONENT_TAG: ${{ inputs.component-tag }}
+        CRC_REGISTRY: ${{ inputs.crc-registry }}
+      run: |
+        #!/bin/bash -eu
+
+        # Check if component repo is set, skip if not
+        if [ -z "${COMPONENT_REPO}" ]; then
+            echo "No component repo found, skipping push step"
+            exit 0
+        fi
+
+        cd ${COMPONENT_REPO}
+
+        # Login to CRC
+        CRC_PASS_PATH="${HOME}/.crc/machines/crc/kubeadmin-password"
+        CRC_PASSWORD=$(cat "${CRC_PASS_PATH}")
+        oc login -u kubeadmin -p "${CRC_PASSWORD}" https://api.crc.testing:6443 --insecure-skip-tls-verify=true
+
+        # Create spyre-operator namespace if it doesn't exist
+        oc new-project spyre-operator || oc project spyre-operator
+
+        # Create openshift-secondary-scheduler-operator namespace if it doesn't exist
+        oc create namespace openshift-secondary-scheduler-operator || true
+
+        # Login to CRC registry via docker (oc registry login saves to podman's auth store,
+        # not docker's ~/.docker/config.json — docker push requires docker login)
+        OC_TOKEN=$(oc whoami -t)
+        docker login --username kubeadmin --password "${OC_TOKEN}" "${CRC_REGISTRY}"
+
+        if [ "${COMPONENT_REPO}" = "spyre-scheduler-plugins" ] ; then
+            export COMPONENT_IMAGE=${CRC_REGISTRY}/openshift-secondary-scheduler-operator/spyre-scheduler:${COMPONENT_TAG}
+        else
+            export COMPONENT_IMAGE=${CRC_REGISTRY}/spyre-operator/${COMPONENT_REPO}:${COMPONENT_TAG}
+        fi
+
+        # Push to CRC registry with TLS verification disabled for insecure registry
+        echo "Pushing ${COMPONENT_REPO} image to CRC..."
+        docker push ${COMPONENT_IMAGE}
+
+        # Special handling for spyre-operator - also push bundle and catalog
+        if [ "${COMPONENT_REPO}" = "spyre-operator" ]; then
+            # Export these so yq's strenv() can read them
+            export CRC_CATALOG_REGISTRY=${CRC_REGISTRY}/openshift-marketplace
+            export TEST_REGISTRY="image-registry.openshift-image-registry.svc:5000/spyre-operator"
+            export TEST_CATALOG_REGISTRY="image-registry.openshift-image-registry.svc:5000/openshift-marketplace"
+            echo "Pushing spyre-operator bundle and catalog images to CRC..."
+            docker push ${CRC_CATALOG_REGISTRY}/spyre-operator-bundle:${COMPONENT_TAG}
+            make opm fbc-bundle-add fbc-build-setup VERSION=${COMPONENT_TAG} REGISTRY=${CRC_CATALOG_REGISTRY} DOCKER=docker
+            # Replace CRC_REGISTRY with local TEST_REGISTRY
+            yq eval -i "(.. | select(type == \"!!str\")) |= sub(strenv(CRC_REGISTRY) + \"/spyre-operator\", strenv(TEST_REGISTRY))" catalog/spyre-operator/spyre-operator.yaml
+            yq eval -i "(.. | select(type == \"!!str\")) |= sub(strenv(CRC_REGISTRY) + \"/openshift-marketplace\", strenv(TEST_CATALOG_REGISTRY))" catalog/spyre-operator/spyre-operator.yaml
+            cat catalog/spyre-operator/spyre-operator.yaml
+            make fbc-docker-build VERSION=${COMPONENT_TAG} REGISTRY=${CRC_CATALOG_REGISTRY} DOCKER=docker
+            docker push ${CRC_CATALOG_REGISTRY}/spyre-operator-catalog:${COMPONENT_TAG}
+        fi

@@ -1,0 +1,49 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: 'Apply MachineConfig'
+description: 'Apply the Spyre device plugin SELinux MachineConfig to the CRC master node and restart the cluster'
+
+inputs:
+  working-directory:
+    description: 'Directory containing the spyre-operator checkout'
+    required: false
+    default: '.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Apply MachineConfig
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        #!/bin/bash -eu
+
+        oc patch mcp master --type=merge -p '{"spec":{"paused":true}}'
+        oc get mcp master -o jsonpath="{.status.configuration} {.spec.configuration}"
+        echo "Apply MachineConfig"
+        cat config/machineconfig/amd64/50-spyre-device-plugin-selinux-minimal.yaml \
+          | sed -e 's@machineconfiguration.openshift.io/role: worker@machineconfiguration.openshift.io/role: master@g' \
+          | oc apply -f -
+        sleep 10
+        oc get mcp master -o jsonpath="{.status.configuration} {.spec.configuration}"
+        oc patch mcp master --type=merge -p '{"spec":{"paused":false}}'
+
+        sleep 60
+        sudo -su $USER crc stop -f
+        sleep 10
+        sudo -su $USER crc start
+        while : ; do
+            if oc login -u kubeadmin -p $(cat ~/.crc/machines/crc/kubeadmin-password) https://api.crc.testing:6443 --insecure-skip-tls-verify=true ; then
+                echo "Successful re-login into openshift"
+                break
+            else
+                echo "Retrying login..."
+                sleep 5
+            fi
+        done
+        oc wait clusteroperator/image-registry --for=condition=Available=True --timeout=10m
+        oc get po -n openshift-marketplace
+        oc get mcp
