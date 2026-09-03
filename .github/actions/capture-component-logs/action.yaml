@@ -1,0 +1,40 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2025,2026                                     |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: 'Capture Component Logs'
+description: 'Start background log capture for Spyre components using stern'
+
+inputs:
+  log-directory:
+    description: 'Directory to store log files'
+    required: false
+    default: 'logs'
+  since:
+    description: 'Time duration to capture logs (e.g., 1h, 30m)'
+    required: false
+    default: '1h'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup log capture
+      shell: bash
+      env:
+        LOG_DIRECTORY: ${{ inputs.log-directory }}
+        SINCE: ${{ inputs.since }}
+      run: |
+        #!/bin/bash -e
+
+        mkdir -p "${LOG_DIRECTORY}"
+
+        # Start log capture in background, each component to a separate file
+        stern spyre-operator -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-operator.log" 2>&1 &
+        stern spyre-device-plugin -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-device-plugin.log" 2>&1 &
+        stern spyre-webhook-validator -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-webhook-validator.log" 2>&1 &
+        stern spyre-health-checker -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-health-checker.log" 2>&1 &
+        stern secondary-scheduler -n openshift-secondary-scheduler-operator --since="${SINCE}" > "${LOG_DIRECTORY}/secondary-scheduler.log" 2>&1 &
+
+        echo "Log capture started in background"
+        echo "Log files will be saved to: ${LOG_DIRECTORY}"

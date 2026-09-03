@@ -1,0 +1,89 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: 'Clone PR and Build'
+description: 'Clone a component PR branch and build its container image for CRC E2E testing'
+
+inputs:
+  pr-url:
+    description: 'GitHub Pull Request URL to test'
+    required: true
+  github-token:
+    description: 'GitHub token used to fetch the PR'
+    required: true
+  crc-registry:
+    description: 'CRC internal image registry hostname'
+    required: false
+    default: 'default-route-openshift-image-registry.apps-crc.testing'
+
+outputs:
+  component-repo:
+    description: 'Name of the component repository built from the PR'
+    value: ${{ steps.clone-build.outputs.component-repo }}
+  component-tag:
+    description: 'Image tag built for the component'
+    value: ${{ steps.clone-build.outputs.component-tag }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Clone PR from GitHub and Build
+      id: clone-build
+      shell: bash
+      env:
+        PR_URL: ${{ inputs.pr-url }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        CRC_REGISTRY: ${{ inputs.crc-registry }}
+      run: |
+        #!/bin/bash -eu
+
+        echo "PR_URL: ${PR_URL}"
+
+        # Extract component name and PR number from PR URL
+        COMPONENT_REPO=$(echo "${PR_URL}" | sed -n 's|https://github.com/[^/]*/\([^/]*\)/pull/.*|\1|p')
+        PR_NUMBER=$(echo "${PR_URL}" | grep -oP 'pull/\K[0-9]+')
+        REPO_ORG=$(echo "${PR_URL}" | sed -n 's|https://github.com/\([^/]*\)/.*|\1|p')
+
+        echo "Component Repository: ${COMPONENT_REPO}"
+        echo "PR Number: ${PR_NUMBER}"
+        echo "Repository Organization: ${REPO_ORG}"
+
+        # Clone the component repository
+        rm -rf ${COMPONENT_REPO} || true
+        git clone https://github.com/${REPO_ORG}/${COMPONENT_REPO}.git
+        cd ${COMPONENT_REPO}
+
+        # Fetch and checkout the PR
+        echo "Fetching PR ${PR_NUMBER}..."
+        git fetch origin pull/${PR_NUMBER}/head:pr-${PR_NUMBER}
+        git checkout pr-${PR_NUMBER}
+        git log -1 --oneline
+
+        export COMPONENT_TAG=$(cat VERSION)-pr-${PR_NUMBER}
+        if [ "${COMPONENT_REPO}" = "spyre-scheduler-plugins" ] ; then
+            export COMPONENT_IMAGE=${CRC_REGISTRY}/openshift-secondary-scheduler-operator/spyre-scheduler:${COMPONENT_TAG}
+        else
+            export COMPONENT_IMAGE=${CRC_REGISTRY}/spyre-operator/${COMPONENT_REPO}:${COMPONENT_TAG}
+        fi
+        echo "image is set: ${COMPONENT_IMAGE}"
+
+        # Set outputs for later steps
+        echo "component-repo=${COMPONENT_REPO}" >> $GITHUB_OUTPUT
+        echo "component-tag=${COMPONENT_TAG}" >> $GITHUB_OUTPUT
+
+        cd ..
+        cd ${COMPONENT_REPO}
+
+        # Special handling for spyre-operator - build operator, bundle, and catalog
+        if [ "${COMPONENT_REPO}" = "spyre-operator" ]; then
+            echo "Building spyre-operator with bundle (catalog will be built after push)..."
+            TEST_REGISTRY="image-registry.openshift-image-registry.svc:5000/spyre-operator"
+            make docker-build VERSION=${COMPONENT_TAG} REGISTRY=${TEST_REGISTRY} DOCKER=docker
+            make bundle bundle-build VERSION=${COMPONENT_TAG} REGISTRY=${TEST_REGISTRY} DOCKER=docker
+            docker tag ${TEST_REGISTRY}/spyre-operator:${COMPONENT_TAG} ${CRC_REGISTRY}/spyre-operator/spyre-operator:${COMPONENT_TAG}
+            docker tag ${TEST_REGISTRY}/spyre-operator-bundle:${COMPONENT_TAG} ${CRC_REGISTRY}/openshift-marketplace/spyre-operator-bundle:${COMPONENT_TAG}
+        else
+            make docker-build IMAGE=${COMPONENT_IMAGE} DOCKER=docker
+        fi

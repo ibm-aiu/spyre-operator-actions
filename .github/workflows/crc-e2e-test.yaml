@@ -1,0 +1,209 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: CRC End to End Test
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'GitHub runner to use for building the image'
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
+      branch-name:
+        description: "Branch name to checkout from spyre-operator repo"
+        required: false
+        type: string
+        default: "main"
+      registry:
+        description: 'Container registry to push to (e.g., ghcr.io, docker.io)'
+        required: false
+        type: string
+        default: 'ghcr.io/ibm-aiu'
+      pr-url:
+        description: 'GitHub Pull Request URL to test. If provided, will fetch and
+          test the PR branch.'
+        required: false
+        type: string
+        default: ''
+      operator-version:
+        description: "Spyre operator tag to run in test"
+        required: false
+        type: string
+        default: ''
+      operator-channel:
+        description: "Operator channel"
+        required: false
+        type: string
+        default: ''
+      repository:
+        description: "Repository to clone for CRC end-to-end tests"
+        required: false
+        type: string
+        default: 'ibm-aiu/spyre-operator'
+      path:
+        description: "Repository path cloned for CRC end-to-end tests"
+        required: false
+        type: string
+        default: 'spyre-operator'
+    secrets:
+      crc-pull-secret:
+        description: 'CRC pull secret for setting up OpenShift Local (CRC)'
+        required: true
+      github-token:
+        description: 'GitHub token for registry authentication and repository access'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CRC_REGISTRY: default-route-openshift-image-registry.apps-crc.testing
+
+jobs:
+  crc-test:
+    runs-on: ${{ inputs.runner }}
+    env:
+      REGISTRY: ${{ inputs.registry || 'ghcr.io/ibm-aiu' }}
+    steps:
+    - name: Checkout spyre-operator-actions repository
+      uses: actions/checkout@v6
+      with:
+        repository: ibm-aiu/spyre-operator-actions
+        ref: E2E_CRC_x86
+        token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
+        path: spyre-operator-actions
+
+    # Reusable action: Resolve branch name, operator version, and operator channel
+    # Falls back to sensible defaults when triggered by a push event
+    - name: Resolve E2E parameters
+      id: params
+      uses: ./spyre-operator-actions/.github/actions/resolve-e2e-params
+      with:
+        branch-name: ${{ inputs.branch-name }}
+        operator-version: ${{ inputs.operator-version }}
+        operator-channel: ${{ inputs.operator-channel }}
+
+    # Reusable action: Install Operator SDK CLI tool with GPG verification
+    - name: Install operator-sdk
+      uses: ./spyre-operator-actions/.github/actions/install-operator-sdk
+      with:
+        version: v1.38.0
+
+    - name: Checkout ${{ inputs.repository }} repository
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ steps.params.outputs.branch-name }}
+        token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
+        path: ${{ inputs.path }}
+
+    # Reusable action: Clone the PR branch (if provided) and build its container image
+    - name: Clone PR from GitHub and Build
+      id: clone-pr
+      if: ${{ inputs.pr-url != '' }}
+      uses: ./spyre-operator-actions/.github/actions/clone-pr-and-build
+      with:
+        pr-url: ${{ inputs.pr-url }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        crc-registry: ${{ env.CRC_REGISTRY }}
+
+    # Reusable action: Install Stern CLI for Kubernetes log tailing
+    - name: Install Stern
+      uses: ./spyre-operator-actions/.github/actions/install-stern
+      with:
+        version: '1.30.0'
+
+    # Reusable action: Download and apply the e2e test config patch
+    - name: End to end test prep
+      uses: ./spyre-operator-actions/.github/actions/prepare-e2e-config
+      with:
+        working-directory: ${{ inputs.path }}
+        operator-version: ${{ steps.params.outputs.operator-version }}
+        operator-channel: ${{ steps.params.outputs.operator-channel }}
+        test-repo: ${{ steps.clone-pr.outputs.component-repo }}
+        test-tag: ${{ steps.clone-pr.outputs.component-tag }}
+
+    - name: Set up CRC
+      uses: crc-org/crc-github-action@v1
+      with:
+        preset: openshift
+        pull-secret: ${{ secrets.crc-pull-secret || secrets.CRC_PULL_SECRET_SUNYACH }}
+        memory: 15200
+        cpus: 16
+        disk: 128
+
+    # Reusable action: Login to CRC cluster and configure registry access
+    # Updates the global pull secret to enable pulling images from the specified registry
+    - name: Update global pull secret for ghcr.io
+      uses: ./spyre-operator-actions/.github/actions/crc-login-and-registry
+      with:
+        crc-password-path: ~/.crc/machines/crc/kubeadmin-password
+        registry: ${{ env.REGISTRY }}
+        registry-username: ${{ github.actor }}
+        registry-token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
+
+    # Reusable action: Push the built component image (and spyre-operator bundle/catalog) to CRC
+    # Moved after CRC setup so the registry route is available
+    - name: Push test component image to CRC
+      if: ${{ inputs.pr-url != '' }}
+      uses: ./spyre-operator-actions/.github/actions/push-component-image
+      with:
+        component-repo: ${{ steps.clone-pr.outputs.component-repo }}
+        component-tag: ${{ steps.clone-pr.outputs.component-tag }}
+        crc-registry: ${{ env.CRC_REGISTRY }}
+
+    # Reusable action: Apply the Spyre device plugin SELinux MachineConfig
+    # and restart the CRC cluster for it to take effect
+    - name: Apply MachineConfig
+      timeout-minutes: 30
+      uses: ./spyre-operator-actions/.github/actions/apply-machineconfig
+      with:
+        working-directory: ${{ inputs.path }}
+
+    # Reusable action: Start background log capture for Spyre components
+    # Captures logs from: spyre-operator, spyre-device-plugin, spyre-webhook-validator,
+    # spyre-health-checker, and secondary-scheduler
+    - name: Start log capture
+      uses: ./spyre-operator-actions/.github/actions/capture-component-logs
+      with:
+        log-directory: ${{ inputs.path }}/logs
+        since: 1h
+
+    - name: Run E2E tests
+      timeout-minutes: 70
+      working-directory: ${{ inputs.path }}
+      run: |
+        #!/bin/bash -e
+        set -o pipefail
+
+        # Run the actual tests
+        make e2e-test 2>&1 | tee e2e-test-output.log
+        E2E_EXIT=$?
+
+        # Stop log capture
+        kill $(jobs -p) 2>/dev/null || true
+
+        exit ${E2E_EXIT}
+
+    # Reusable action: Capture diagnostic information for troubleshooting
+    # Collects pod descriptions, daemonset info, pod status, and events
+    - name: Capture spyre-device-plugin diagnostics
+      if: always()
+      uses: ./spyre-operator-actions/.github/actions/capture-diagnostics
+      with:
+        log-directory: ${{ inputs.path }}/logs
+        namespace: spyre-operator
+        component: spyre-device-plugin
+
+    - name: Upload component logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: component-logs
+        path: ${{ inputs.path }}/logs/
+        if-no-files-found: ignore

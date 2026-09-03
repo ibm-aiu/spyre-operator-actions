@@ -1,0 +1,72 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: 'Resolve E2E Parameters'
+description: 'Resolve branch name, operator version, and operator channel, falling back to defaults for push events'
+
+inputs:
+  branch-name:
+    description: 'Branch name to checkout from spyre-operator repo'
+    required: false
+  operator-version:
+    description: 'Spyre operator tag to run in test'
+    required: false
+  operator-channel:
+    description: 'Operator channel'
+    required: false
+
+outputs:
+  branch-name:
+    description: 'Resolved branch name'
+    value: ${{ steps.resolve.outputs.branch-name }}
+  operator-version:
+    description: 'Resolved operator version'
+    value: ${{ steps.resolve.outputs.operator-version }}
+  operator-channel:
+    description: 'Resolved operator channel'
+    value: ${{ steps.resolve.outputs.operator-channel }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve parameters
+      id: resolve
+      shell: bash
+      env:
+        INPUT_BRANCH_NAME: ${{ inputs.branch-name }}
+        INPUT_OPERATOR_VERSION: ${{ inputs.operator-version }}
+        INPUT_OPERATOR_CHANNEL: ${{ inputs.operator-channel }}
+      run: |
+        #!/bin/bash -eu
+
+        # Use input value if provided (workflow_dispatch), otherwise use default
+        BRANCH_NAME="${INPUT_BRANCH_NAME}"
+
+        # Set default if empty
+        if [ -z "$BRANCH_NAME" ]; then
+          BRANCH_NAME="image-build"
+        fi
+
+        echo "branch-name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+        echo "Using branch: ${BRANCH_NAME}"
+
+        # Use input values if provided (workflow_dispatch), otherwise use defaults (push)
+        OPERATOR_VERSION="${INPUT_OPERATOR_VERSION}"
+        OPERATOR_CHANNEL="${INPUT_OPERATOR_CHANNEL}"
+
+        # Set defaults if empty (for push events)
+        if [ -z "$OPERATOR_VERSION" ]; then
+          OPERATOR_VERSION="1.4.0-dev"
+        fi
+
+        if [ -z "$OPERATOR_CHANNEL" ]; then
+          OPERATOR_CHANNEL="fast-v1.4"
+        fi
+
+        echo "operator-version=${OPERATOR_VERSION}" >> $GITHUB_OUTPUT
+        echo "operator-channel=${OPERATOR_CHANNEL}" >> $GITHUB_OUTPUT
+
+        echo "Using operator version: ${OPERATOR_VERSION}"
+        echo "Using operator channel: ${OPERATOR_CHANNEL}"

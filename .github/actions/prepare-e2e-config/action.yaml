@@ -1,0 +1,73 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: 'Prepare E2E Config'
+description: 'Download and apply the e2e test config patch script, then print the resolved config'
+
+inputs:
+  working-directory:
+    description: 'Directory containing the repository to checkout'
+    required: false
+    default: '.'
+  operator-version:
+    description: 'Image tag to use for spyre operator components'
+    required: true
+  operator-channel:
+    description: 'Operator channel to use'
+    required: true
+  test-repo:
+    description: 'Component repository being tested from a PR, if any'
+    required: false
+  test-tag:
+    description: 'Component image tag being tested from a PR, if any'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download and apply e2e config patch
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TEST_REGISTRY: "image-registry.openshift-image-registry.svc:5000/spyre-operator"
+        TEST_CATALOG_REGISTRY: "image-registry.openshift-image-registry.svc:5000/openshift-marketplace"
+        TEST_SECONDARY_SCHED_REGISTRY: "image-registry.openshift-image-registry.svc:5000/openshift-secondary-scheduler-operator"
+        DEVICE_PLUGIN_TAG: ${{ inputs.operator-version }}
+        SCHEDULER_PLUGIN_TAG: ${{ inputs.operator-version }}
+        DEVICE_PLUGIN_INIT_TAG: ${{ inputs.operator-version }}
+        VALIDATOR_TAG: ${{ inputs.operator-version }}
+        HEALTH_CHECKER_TAG: ${{ inputs.operator-version }}
+        OPERATOR_TAG: ${{ inputs.operator-version }}
+        BUNDLE_TAG: ${{ inputs.operator-version }}
+        CATALOG_TAG: ${{ inputs.operator-version }}
+        OPERATOR_CHANNEL: ${{ inputs.operator-channel }}
+        TEST_REPO: ${{ inputs.test-repo }}
+        TEST_TAG: ${{ inputs.test-tag }}
+      run: |
+        #!/bin/bash -eu
+
+        curl -sSL -o patch-e2e-config.bash https://raw.githubusercontent.com/ibm-aiu/spyre-operator-actions/image-build/scripts/patch-e2e-config.bash
+        chmod +x patch-e2e-config.bash
+
+        # Patch e2e config
+        bash patch-e2e-config.bash
+        rm -f patch-e2e-config.bash
+
+        # patch-e2e-config.bash incorrectly sets catalog.repository = TEST_REGISTRY
+        # (the spyre-operator namespace) but the catalog image is pushed to the
+        # openshift-marketplace namespace.  Override it here with TEST_CATALOG_REGISTRY.
+        if [ -n "${TEST_REPO}" ] && [ "${TEST_REPO}" = "spyre-operator" ]; then
+          yq eval -i ".catalog.repository=strenv(TEST_CATALOG_REGISTRY)" test/config.yaml
+        fi
+
+        # updates defaultChannel.  Override it explicitly here from OPERATOR_CHANNEL.
+        if [ -n "${OPERATOR_CHANNEL}" ]; then
+          yq eval -i ".defaultChannel=strenv(OPERATOR_CHANNEL)" test/config.yaml
+        fi
+
+        echo "End-to-End Config:"
+        echo "-------------------------------------------------------------------------------------------"
+        yq '.' test/config.yaml
+        echo "-------------------------------------------------------------------------------------------"
