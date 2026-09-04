@@ -33,8 +33,30 @@ runs:
 
         sleep 60
         sudo -su $USER crc stop -f
-        sleep 10
-        sudo -su $USER crc start
+        # Give the VM time to fully shut down before restarting
+        sleep 30
+
+        # Retry crc start up to 3 times — under runner load the internal API
+        # server readiness check can time out on the first attempt.
+        CRC_START_RETRIES=0
+        CRC_START_MAX=3
+        while [ $CRC_START_RETRIES -lt $CRC_START_MAX ]; do
+          echo "Starting CRC (attempt $((CRC_START_RETRIES+1))/$CRC_START_MAX)..."
+          if sudo -su $USER crc start; then
+            echo "CRC started successfully."
+            break
+          fi
+          CRC_START_RETRIES=$((CRC_START_RETRIES+1))
+          if [ $CRC_START_RETRIES -lt $CRC_START_MAX ]; then
+            echo "crc start failed — stopping and retrying in 60s..."
+            sudo -su $USER crc stop -f || true
+            sleep 60
+          else
+            echo "ERROR: crc start failed after $CRC_START_MAX attempts."
+            exit 1
+          fi
+        done
+
         while : ; do
             if oc login -u kubeadmin -p $(cat ~/.crc/machines/crc/kubeadmin-password) https://api.crc.testing:6443 --insecure-skip-tls-verify=true ; then
                 echo "Successful re-login into openshift"
