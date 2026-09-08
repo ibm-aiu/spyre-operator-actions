@@ -5,17 +5,63 @@ on:
     branches: [rana-e2e-s390x-workflow]
   pull_request:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      branch_name:
+        description: "Branch to run E2E tests from"
+        required: true
+        default: "main"
+
+      device_plugin_tag:
+        description: "Device Plugin image tag"
+        required: false
+        default: ""
+
+      scheduler_plugin_tag:
+        description: "Spyre Scheduler Plugin image tag"
+        required: false
+        default: ""
+
+      validator_tag:
+        description: "Spyre Pod Validator image tag"
+        required: false
+        default: ""
+
+      health_checker_tag:
+        description: "Spyre Health Checker image tag"
+        required: false
+        default: ""
+
+      operator_tag:
+        description: "Spyre Operator image tag"
+        required: false
+        default: ""
+
+      bundle_tag:
+        description: "Spyre Operator Bundle image tag"
+        required: false
+        default: ""
+
+      catalog_tag:
+        description: "Spyre Operator Catalog image tag"
+        required: false
+        default: ""
 
 # Least-privilege default — nothing here needs write access to the repo.
 permissions:
   contents: read
 
-
 jobs:
   e2e:
     runs-on: [self-hosted, Linux, S390X]
-
+    env:
+      DEVICE_PLUGIN_TAG: ${{ github.event.inputs.device_plugin_tag }}
+      SCHEDULER_PLUGIN_TAG: ${{ github.event.inputs.scheduler_plugin_tag }}
+      VALIDATOR_TAG: ${{ github.event.inputs.validator_tag }}
+      HEALTH_CHECKER_TAG: ${{ github.event.inputs.health_checker_tag }}
+      OPERATOR_TAG: ${{ github.event.inputs.operator_tag }}
+      BUNDLE_TAG: ${{ github.event.inputs.bundle_tag }}
+      CATALOG_TAG: ${{ github.event.inputs.catalog_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,7 +78,7 @@ jobs:
         run: |
           oc whoami
           oc whoami --show-server
-          
+          oc get node
           echo "Checking e2e-tests access..."
           oc auth can-i get pods -n e2e-tests
           # oc project e2e-tests
