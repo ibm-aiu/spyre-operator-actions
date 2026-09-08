@@ -10,6 +10,7 @@ on:
       branch_name:
         description: "Branch to run E2E tests from spyre operator"
         required: true
+        type: string
         default: "main"
       registry:
         description: 'Container registry to push to (e.g., ghcr.io, docker.io)'
@@ -19,27 +20,33 @@ on:
       device_plugin_tag:
         description: "Device Plugin image tag"
         required: false
+        type: string
         default: ""
       scheduler_plugin_tag:
         description: "Spyre Scheduler Plugin image tag"
         required: false
         default: ""
+        type: string
       validator_tag:
         description: "Spyre Pod Validator image tag"
         required: false
         default: ""
+        type: string
       health_checker_tag:
         description: "Spyre Health Checker image tag"
         required: false
         default: ""
+        type: string
       operator_tag:
         description: "Spyre Operator image tag"
         required: false
         default: ""
+        type: string
       bundle_tag:
         description: "Spyre Operator Bundle image tag"
         required: false
         default: ""
+        type: string
       repository:
         description: "Repository to clone for CRC end-to-end tests"
         required: false
@@ -49,6 +56,7 @@ on:
         description: "Spyre Operator Catalog image tag"
         required: false
         default: ""
+        type: string
       pr-url:
         description: 'GitHub Pull Request URL to test. If provided, will fetch and test the PR branch.'
         required: false
