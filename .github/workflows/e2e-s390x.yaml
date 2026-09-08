@@ -1,8 +1,10 @@
 name: E2E Tests (SNO cluster)
 
 on:
-  pull_request:
+  push:
     branches: [rana-e2e-s390x-workflow]
+  pull_request:
+    branches: [main]
   workflow_dispatch: {}
 
 # Least-privilege default — nothing here needs write access to the repo.
