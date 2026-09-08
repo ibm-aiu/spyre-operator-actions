@@ -44,6 +44,19 @@ runs:
               exit 1
               ;;
           esac
+
+          # Check whether an existing stern binary is usable.
+          if command -v stern >/dev/null 2>&1; then
+            if stern --version >/dev/null 2>&1; then
+              echo "stern is already installed and usable:"
+              stern --version
+              exit 0
+            fi
+
+            echo "Existing stern binary is not usable on this architecture."
+            echo "Removing existing binary..."
+            sudo rm -f "$(command -v stern)"
+          fi
     
           STERN_TARBALL="stern_${STERN_VERSION}_linux_${STERN_ARCH}.tar.gz"
           STERN_URL="https://github.com/stern/stern/releases/download/v${STERN_VERSION}/${STERN_TARBALL}"
