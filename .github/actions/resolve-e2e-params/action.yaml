@@ -46,7 +46,7 @@ runs:
 
         # Set default if empty
         if [ -z "$BRANCH_NAME" ]; then
-          BRANCH_NAME="image-build"
+          BRANCH_NAME="main"
         fi
 
         echo "branch-name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
