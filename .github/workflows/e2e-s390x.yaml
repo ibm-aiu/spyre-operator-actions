@@ -8,53 +8,53 @@ on:
   workflow_dispatch:
     inputs:
       branch_name:
-        description: "Branch to run E2E tests from"
+        description: "Branch to run E2E tests from spyre operator"
         required: true
         default: "main"
-
+      registry:
+        description: 'Container registry to push to (e.g., ghcr.io, docker.io)'
+        required: false
+        type: string
+        default: 'ghcr.io/ibm-aiu'
       device_plugin_tag:
         description: "Device Plugin image tag"
         required: false
         default: ""
-
       scheduler_plugin_tag:
         description: "Spyre Scheduler Plugin image tag"
         required: false
         default: ""
-
       validator_tag:
         description: "Spyre Pod Validator image tag"
         required: false
         default: ""
-
       health_checker_tag:
         description: "Spyre Health Checker image tag"
         required: false
         default: ""
-
       operator_tag:
         description: "Spyre Operator image tag"
         required: false
         default: ""
-
       bundle_tag:
         description: "Spyre Operator Bundle image tag"
         required: false
         default: ""
-
       catalog_tag:
         description: "Spyre Operator Catalog image tag"
         required: false
         default: ""
-
+        
 # Least-privilege default — nothing here needs write access to the repo.
 permissions:
   contents: read
+  packages: write
 
 jobs:
   e2e:
     runs-on: [self-hosted, Linux, S390X]
     env:
+      REGISTRY: ${{ inputs.registry || 'ghcr.io/ibm-aiu' }}
       DEVICE_PLUGIN_TAG: ${{ github.event.inputs.device_plugin_tag }}
       SCHEDULER_PLUGIN_TAG: ${{ github.event.inputs.scheduler_plugin_tag }}
       VALIDATOR_TAG: ${{ github.event.inputs.validator_tag }}
