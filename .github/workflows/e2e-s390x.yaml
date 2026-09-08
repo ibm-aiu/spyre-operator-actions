@@ -48,7 +48,7 @@ on:
         default: ""
         type: string
       repository:
-        description: "Repository to clone for CRC end-to-end tests"
+        description: "Repository to clone for end-to-end tests"
         required: false
         type: string
         default: 'ibm-aiu/spyre-operator'
@@ -62,11 +62,6 @@ on:
         required: false
         type: string
         default: ''
-      path:
-        description: "Repository path cloned for CRC end-to-end tests"
-        required: false
-        type: string
-        default: 'spyre-operator'
     secrets:
       github-token:
         description: 'GitHub token for registry authentication and repository access'
@@ -110,10 +105,10 @@ jobs:
       - name: Checkout ${{ inputs.repository }} repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.repository }}
-          ref: ${{ inputs.branch_name }}
+          repository: ${{ inputs.repository || 'ibm-aiu/spyre-operator' }}
+          ref: ${{ inputs.branch_name || 'main' }}
           token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
-          path: ${{ inputs.path }}
+          path: spyre-operator
 
       # Reusable action: Clone the PR branch (if provided) and build its container image
       - name: Clone PR from GitHub and Build
