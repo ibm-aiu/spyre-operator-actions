@@ -127,10 +127,10 @@ jobs:
           make ginkgo jq  yq
      
       # Reusable action: Install Stern CLI for Kubernetes log tailing
-      - name: Install Stern
-        uses: ./spyre-operator-actions/.github/actions/install-stern
-        with:
-          version: '1.30.0'      
+      #- name: Install Stern
+      #  uses: ./spyre-operator-actions/.github/actions/install-stern
+      #  with:
+      #    version: '1.30.0'      
       
       # ------------------------------------------------------------
       # Configure kubeconfig
