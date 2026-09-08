@@ -24,7 +24,38 @@ runs:
 
         # Install stern for log capture
         if ! command -v stern &> /dev/null; then
-          curl -L "https://github.com/stern/stern/releases/download/v${STERN_VERSION}/stern_${STERN_VERSION}_linux_amd64.tar.gz" -o stern.tar.gz
+          ARCH="$(uname -m)"
+
+          case "${ARCH}" in
+            x86_64)
+              STERN_ARCH="amd64"
+              ;;
+            aarch64|arm64)
+              STERN_ARCH="arm64"
+              ;;
+            ppc64le)
+              STERN_ARCH="ppc64le"
+              ;;
+            s390x)
+              STERN_ARCH="s390x"
+              ;;
+            *)
+              echo "Unsupported architecture: ${ARCH}"
+              exit 1
+              ;;
+          esac
+    
+          STERN_TARBALL="stern_${STERN_VERSION}_linux_${STERN_ARCH}.tar.gz"
+          STERN_URL="https://github.com/stern/stern/releases/download/v${STERN_VERSION}/${STERN_TARBALL}"
+
+          echo "Installing Stern ${STERN_VERSION}"
+          echo "Architecture: ${ARCH}"
+          echo "Stern architecture: ${STERN_ARCH}"
+          echo "Download URL: ${STERN_URL}"
+
+          curl --fail --retry 5 -L \
+            "${STERN_URL}" \
+            -o stern.tar.gz
           tar -xzf stern.tar.gz
           sudo mv stern /usr/local/bin/
           sudo chmod +x /usr/local/bin/stern
