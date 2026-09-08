@@ -92,7 +92,7 @@ jobs:
       # Checkout workflow/action repository 
       # ------------------------------------------------------------
       - name: Checkout spyre-operator-actions repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: ibm-aiu/spyre-operator-actions
           ref: rana-e2e-s390x-workflow
@@ -103,7 +103,7 @@ jobs:
       # Check out spyre operator
       # ----------------------------------------------------------- 
       - name: Checkout ${{ inputs.repository }} repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.branch_name }}
