@@ -124,7 +124,13 @@ jobs:
         working-directory: spyre-operator 
         run: | 
           set -euo pipefail 
-          make ginkgo jq stern yq
+          make ginkgo jq  yq
+     
+      # Reusable action: Install Stern CLI for Kubernetes log tailing
+      - name: Install Stern
+        uses: ./spyre-operator-actions/.github/actions/install-stern
+        with:
+          version: '1.30.0'      
       
       # ------------------------------------------------------------
       # Configure kubeconfig
