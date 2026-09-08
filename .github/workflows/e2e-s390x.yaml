@@ -5,7 +5,7 @@ on:
     branches: [rana-e2e-s390x-workflow]
   pull_request:
     branches: [main]
-  workflow_dispatch:
+  workflow_call:
     inputs:
       branch_name:
         description: "Branch to run E2E tests from spyre operator"
@@ -40,10 +40,24 @@ on:
         description: "Spyre Operator Bundle image tag"
         required: false
         default: ""
+      repository:
+        description: "Repository to clone for CRC end-to-end tests"
+        required: false
+        type: string
+        default: 'ibm-aiu/spyre-operator'
       catalog_tag:
         description: "Spyre Operator Catalog image tag"
         required: false
         default: ""
+      pr-url:
+        description: 'GitHub Pull Request URL to test. If provided, will fetch and test the PR branch.'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      github-token:
+        description: 'GitHub token for registry authentication and repository access'
+        required: true
         
 # Least-privilege default — nothing here needs write access to the repo.
 permissions:
@@ -55,24 +69,64 @@ jobs:
     runs-on: [self-hosted, Linux, S390X]
     env:
       REGISTRY: ${{ inputs.registry || 'ghcr.io/ibm-aiu' }}
-      DEVICE_PLUGIN_TAG: ${{ github.event.inputs.device_plugin_tag }}
-      SCHEDULER_PLUGIN_TAG: ${{ github.event.inputs.scheduler_plugin_tag }}
-      VALIDATOR_TAG: ${{ github.event.inputs.validator_tag }}
-      HEALTH_CHECKER_TAG: ${{ github.event.inputs.health_checker_tag }}
-      OPERATOR_TAG: ${{ github.event.inputs.operator_tag }}
-      BUNDLE_TAG: ${{ github.event.inputs.bundle_tag }}
-      CATALOG_TAG: ${{ github.event.inputs.catalog_tag }}
+      BRANCH_NAME: ${{ inputs.branch_name || github.head_ref || github.ref_name }}
+      DEVICE_PLUGIN_TAG: ${{ inputs.device_plugin_tag }}
+      SCHEDULER_PLUGIN_TAG: ${{ inputs.scheduler_plugin_tag }}
+      VALIDATOR_TAG: ${{ inputs.validator_tag }}
+      HEALTH_CHECKER_TAG: ${{ inputs.health_checker_tag }}
+      OPERATOR_TAG: ${{ inputs.operator_tag }}
+      BUNDLE_TAG: ${{ inputs.bundle_tag }}
+      CATALOG_TAG: ${{ inputs.catalog_tag }}
+      KUBECONFIG: ${{ github.workspace }}/.kube/config
+      E2E_KUBECONFIG: ${{ github.workspace }}/.kube/config
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      # ------------------------------------------------------------ 
+      # Checkout workflow/action repository 
+      # ------------------------------------------------------------
+      - name: Checkout spyre-operator-actions repository
+        uses: actions/checkout@v6
+        with:
+          repository: ibm-aiu/spyre-operator-actions
+          ref: rana-e2e-s390x-workflow
+          token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
+          path: spyre-operator-actions
 
+      # -----------------------------------------------------------
+      # Check out spyre operator
+      # ----------------------------------------------------------- 
+      - name: Checkout ${{ inputs.repository }} repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.branch_name }}
+          token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
+
+      # Reusable action: Clone the PR branch (if provided) and build its container image
+      - name: Clone PR from GitHub and Build
+        id: clone-pr
+        if: ${{ inputs.pr-url != '' }}
+        uses: ./spyre-operator-actions/.github/actions/clone-pr-and-build
+        with:
+          pr-url: ${{ inputs.pr-url }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+
+      - name: Prepare CLI tools 
+        working-directory: spyre-operator 
+        run: | 
+          set -euo pipefail 
+          make ginkgo jq stern yq
+      
+      # ------------------------------------------------------------
+      # Configure kubeconfig
+      # ------------------------------------------------------------
       - name: Set up kubeconfig
         env:
           KUBECONFIG_CONTENT: ${{ secrets.SNO_KUBECONFIG }}
         run: |
-          mkdir -p "$HOME/.kube"
-          printf '%s' "$KUBECONFIG_CONTENT" > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
+          mkdir -p "$(dirname "$KUBECONFIG")"
+          printf '%s' "$KUBECONFIG_CONTENT" > "$KUBECONFIG"
+          chmod 600 "$KUBECONFIG"
 
       - name: Verify cluster access
         run: |
@@ -82,3 +136,44 @@ jobs:
           echo "Checking e2e-tests access..."
           oc auth can-i get pods -n e2e-tests
           # oc project e2e-tests
+                
+      # ------------------------------------------------------------
+      # Display parameters/environment
+      # ------------------------------------------------------------
+
+      - name: Echo parameters and environment
+        run: |
+          echo "BRANCH_NAME:             ${BRANCH_NAME}"
+          echo "DEVICE_PLUGIN_TAG:      ${DEVICE_PLUGIN_TAG}"
+          echo "SCHEDULER_PLUGIN_TAG:   ${SCHEDULER_PLUGIN_TAG}"
+          echo "VALIDATOR_TAG:          ${VALIDATOR_TAG}"
+          echo "HEALTH_CHECKER_TAG:     ${HEALTH_CHECKER_TAG}"
+          echo "OPERATOR_TAG:           ${OPERATOR_TAG}"
+          echo "BUNDLE_TAG:             ${BUNDLE_TAG}"
+          echo "CATALOG_TAG:            ${CATALOG_TAG}"
+
+          go version
+      
+      # ------------------------------------------------------------
+      # E2E preparation
+      # ------------------------------------------------------------
+
+      - name: Prepare E2E environment
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+
+          set -euo pipefail
+          touch stern.barrier
+          export GITHUB_TOKEN="$GH_TOKEN"
+          
+          curl -sSL -o patch-e2e-config.bash https://raw.githubusercontent.com/ibm-aiu/spyre-operator-actions/image-build/scripts/patch-e2e-config.bash
+          chmod +x patch-e2e-config.bash
+          # Patch e2e config
+          bash patch-e2e-config.bash
+          rm -f patch-e2e-config.bash
+          echo "E2E configuration:"
+          echo "------------------------------------------------------------"
+          bin/yq '.' test/config.yaml
+          echo "------------------------------------------------------------"
+
