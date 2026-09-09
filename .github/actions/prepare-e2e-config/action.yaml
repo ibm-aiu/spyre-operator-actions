@@ -48,18 +48,28 @@ runs:
       run: |
         #!/bin/bash -eu
 
-        curl -sSL -o patch-e2e-config.bash https://raw.githubusercontent.com/ibm-aiu/spyre-operator-actions/image-build/scripts/patch-e2e-config.bash
-        chmod +x patch-e2e-config.bash
-
-        # Patch e2e config
-        bash patch-e2e-config.bash
-        rm -f patch-e2e-config.bash
+        # Use the local script from checked out spyre-operator-actions repo if present, otherwise download from repo
+        if [ -f "../spyre-operator-actions/scripts/patch-e2e-config.bash" ]; then
+          bash ../spyre-operator-actions/scripts/patch-e2e-config.bash
+        elif [ -f "./spyre-operator-actions/scripts/patch-e2e-config.bash" ]; then
+          bash ./spyre-operator-actions/scripts/patch-e2e-config.bash
+        else
+          curl -sSL --proto '=https' --tlsv1.2 -o patch-e2e-config.bash https://raw.githubusercontent.com/ibm-aiu/spyre-operator-actions/fix-scheduler-e2e-registry/scripts/patch-e2e-config.bash
+          chmod +x patch-e2e-config.bash
+          bash patch-e2e-config.bash
+          rm -f patch-e2e-config.bash
+        fi
 
         # patch-e2e-config.bash incorrectly sets catalog.repository = TEST_REGISTRY
         # (the spyre-operator namespace) but the catalog image is pushed to the
         # openshift-marketplace namespace.  Override it here with TEST_CATALOG_REGISTRY.
         if [ -n "${TEST_REPO}" ] && [ "${TEST_REPO}" = "spyre-operator" ]; then
           yq eval -i ".catalog.repository=strenv(TEST_CATALOG_REGISTRY)" test/config.yaml
+        fi
+
+        # Override scheduler repository to openshift-secondary-scheduler-operator namespace
+        if [ -n "${TEST_REPO}" ] && [ "${TEST_REPO}" = "spyre-scheduler-plugins" ]; then
+          yq eval -i ".scheduler.repository=strenv(TEST_SECONDARY_SCHED_REGISTRY)" test/config.yaml
         fi
 
         # updates defaultChannel.  Override it explicitly here from OPERATOR_CHANNEL.

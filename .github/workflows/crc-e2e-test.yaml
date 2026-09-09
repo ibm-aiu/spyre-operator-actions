@@ -49,6 +49,11 @@ on:
         required: false
         type: string
         default: 'spyre-operator'
+      actions-ref:
+        description: "Branch or ref to checkout from spyre-operator-actions repo"
+        required: false
+        type: string
+        default: ''
     secrets:
       crc-pull-secret:
         description: 'CRC pull secret for setting up OpenShift Local (CRC)'
@@ -71,10 +76,10 @@ jobs:
       REGISTRY: ${{ inputs.registry || 'ghcr.io/ibm-aiu' }}
     steps:
     - name: Checkout spyre-operator-actions repository
-      uses: actions/checkout@v6
+      uses: actions/checkout@v4
       with:
         repository: ibm-aiu/spyre-operator-actions
-        ref: E2E_CRC_x86
+        ref: ${{ inputs.actions-ref || (github.repository == 'ibm-aiu/spyre-operator-actions' && github.ref_name) || 'main' }}
         token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
         path: spyre-operator-actions
 
@@ -95,7 +100,7 @@ jobs:
         version: v1.38.0
 
     - name: Checkout ${{ inputs.repository }} repository
-      uses: actions/checkout@v6
+      uses: actions/checkout@v4
       with:
         repository: ${{ inputs.repository }}
         ref: ${{ steps.params.outputs.branch-name }}
