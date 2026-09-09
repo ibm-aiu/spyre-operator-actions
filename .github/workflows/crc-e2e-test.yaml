@@ -53,7 +53,7 @@ on:
         description: "Branch or ref to checkout from spyre-operator-actions repo"
         required: false
         type: string
-        default: ''
+        default: 'main'
     secrets:
       crc-pull-secret:
         description: 'CRC pull secret for setting up OpenShift Local (CRC)'
