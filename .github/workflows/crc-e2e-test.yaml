@@ -132,7 +132,7 @@ jobs:
       uses: crc-org/crc-github-action@v1
       with:
         preset: openshift
-        pull-secret: ${{ secrets.crc-pull-secret || secrets.CRC_PULL_SECRET_SUNYACH }}
+        pull-secret: ${{ secrets.crc-pull-secret || secrets.CRC_PULL_SECRET }}
         memory: 15200
         cpus: 16
         disk: 128
