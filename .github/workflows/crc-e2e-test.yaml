@@ -57,9 +57,7 @@ on:
         description: 'GitHub token for registry authentication and repository access'
         required: true
 
-permissions:
-  contents: read
-  packages: write
+permissions: read-all
 
 env:
   CRC_REGISTRY: default-route-openshift-image-registry.apps-crc.testing
