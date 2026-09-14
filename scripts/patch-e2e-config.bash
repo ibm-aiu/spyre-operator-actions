@@ -68,8 +68,6 @@ function patch_test_config() {
 		${YQ_CMD} '.draDriver.version=strenv(DRA_DRIVER_TAG)' ${TEST_CONFIG}
 	fi
 
-	# Publicly-unavailable tag patch
-
 	if [[ -n ${DEVICE_PLUGIN_INIT_TAG} ]]; then
 		${YQ_CMD} eval -i '.devicePluginInit.version=strenv(DEVICE_PLUGIN_INIT_TAG)' ${TEST_CONFIG}
 	fi
@@ -79,10 +77,7 @@ function patch_test_config() {
 		${YQ_CMD} eval -i '.mockUser.version=strenv(EXPORTER_TAG)' ${TEST_CONFIG}
 	fi
 
-	if [[ -n ${EXPORTER_REGISTRY} ]]; then
-		${YQ_CMD} '.exporter.repository=strenv(EXPORTER_REGISTRY)' ${TEST_CONFIG}
-		${YQ_CMD} '.mockUser.repository=strenv(EXPORTER_REGISTRY)' ${TEST_CONFIG}
-	fi
+	# Publicly-unavailable tag patch
 
 	if [[ -n ${CARD_MGMT_TAG} ]]; then
 		${YQ_CMD} eval -i '.cardManagement.version=strenv(CARD_MGMT_TAG)' ${TEST_CONFIG}
@@ -116,6 +111,9 @@ function patch_test_config() {
 			"spyre-device-plugin")
 				COMPONENT="devicePlugin"
 				;;
+			"spyre-device-plugin-init")
+				COMPONENT="devicePluginInit"
+				;;
 			"spyre-scheduler-plugins")
 				COMPONENT="scheduler"
 				;;
@@ -127,6 +125,9 @@ function patch_test_config() {
 				;;
 			"dra-driver-spyre")
 				COMPONENT="draDriver"
+				;;
+			"spyre-metrics-exporter")
+				COMPONENT="exporter"
 				;;
 			*)
 				echo "Warning: Unknown repository ${TEST_REPO}, skipping registry update"
@@ -148,7 +149,15 @@ function patch_test_config() {
 				${YQ_CMD} ".${COMPONENT}.imagePullPolicy=\"IfNotPresent\"" ${TEST_CONFIG}
 			fi
 
-			# If component is operator, also set catalog and bundle registry
+			# If component is exporter, also set mockUser registry and tag
+			if [[ ${COMPONENT} == "exporter" ]] ; then
+				echo "Setting .mockUser"
+				${YQ_CMD} ".mockUser.repository=strenv(TEST_REGISTRY)" ${TEST_CONFIG}
+				${YQ_CMD} ".mockUser.version=strenv(TEST_TAG)" ${TEST_CONFIG}
+				${YQ_CMD} ".mockUser.imagePullPolicy=\"IfNotPresent\"" ${TEST_CONFIG}
+			fi
+
+			# If component is operator, also set catalog and bundle registry and tag
 			if [[ ${COMPONENT} == "operator" ]] && [[ -n ${TEST_CATALOG_REGISTRY} ]] ; then
 				echo "Setting .catalog"
 				${YQ_CMD} ".catalog.repository=strenv(TEST_CATALOG_REGISTRY)" ${TEST_CONFIG}
