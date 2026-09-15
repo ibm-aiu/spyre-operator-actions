@@ -80,3 +80,9 @@ runs:
             make fbc-docker-build VERSION=${COMPONENT_TAG} REGISTRY=${CRC_CATALOG_REGISTRY} DOCKER=docker
             docker push ${CRC_CATALOG_REGISTRY}/spyre-operator-catalog:${COMPONENT_TAG}
         fi
+
+        # Special handling for spyre-metrics-exporter - also push mock-user
+        if [ "${COMPONENT_REPO}" = "spyre-metrics-exporter" ]; then
+          export MOCK_USER_IMG=${CRC_REGISTRY}/spyre-operator/spyre-mock-user:${COMPONENT_TAG}
+          docker push ${MOCK_USER_IMG}
+        fi
