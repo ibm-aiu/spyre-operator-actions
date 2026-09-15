@@ -87,3 +87,9 @@ runs:
         else
             make docker-build IMAGE=${COMPONENT_IMAGE} DOCKER=docker
         fi
+
+         # Special handling for spyre-metrics-exporter - build mock-user
+        if [ "${COMPONENT_REPO}" = "spyre-metrics-exporter" ]; then
+            export MOCK_USER_IMG=${CRC_REGISTRY}/spyre-operator/spyre-mock-user:${COMPONENT_TAG}
+            make docker-mock-user-build DOCKER=docker
+        fi
