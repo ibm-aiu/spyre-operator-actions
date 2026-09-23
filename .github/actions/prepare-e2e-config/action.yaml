@@ -48,6 +48,19 @@ runs:
       run: |
         #!/bin/bash -eu
 
+        # Ensure yq is in PATH (check bin/ in repo, GOBIN, and system)
+        if [ -f "bin/yq" ]; then
+          export PATH="$(pwd)/bin:$PATH"
+        elif ! command -v yq >/dev/null 2>&1; then
+          if make -n yq >/dev/null 2>&1; then
+            make yq
+            export PATH="$(pwd)/bin:$PATH"
+          elif command -v go >/dev/null 2>&1; then
+            go install github.com/mikefarah/yq/v4@latest
+            export PATH="$HOME/go/bin:$PATH"
+          fi
+        fi
+
         curl -sSL -o patch-e2e-config.bash https://raw.githubusercontent.com/ibm-aiu/spyre-operator-actions/image-build/scripts/patch-e2e-config.bash
         chmod +x patch-e2e-config.bash
 

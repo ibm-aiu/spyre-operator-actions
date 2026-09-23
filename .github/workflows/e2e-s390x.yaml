@@ -153,6 +153,12 @@ jobs:
         github-token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
         registry: ${{ env.REGISTRY }}
 
+    - name: Prepare test CLI tools
+      working-directory: ${{ inputs.path }}
+      run: |
+        #!/bin/bash -eu
+        make ginkgo jq yq || true
+
     # Reusable action: Install Stern CLI for Kubernetes log tailing
     - name: Install Stern
       uses: ./spyre-operator-actions/.github/actions/install-stern
