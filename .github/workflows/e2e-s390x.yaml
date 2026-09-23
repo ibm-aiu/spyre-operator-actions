@@ -187,8 +187,9 @@ jobs:
       run: |
         oc whoami
         oc whoami --show-server
-        oc get nodes
-        oc get co
+        oc get node
+        echo "Checking e2e-tests access..."
+        oc auth can-i get pods -n e2e-tests
 
     # Reusable action: Start background log capture for Spyre components
     # Captures logs from: spyre-operator, spyre-device-plugin, spyre-webhook-validator,
