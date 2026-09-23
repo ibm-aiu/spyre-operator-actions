@@ -29,14 +29,17 @@ runs:
 
         mkdir -p "${LOG_DIRECTORY}"
 
-        # Start log capture in background, each component to a separate file
-        stern spyre-operator -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-operator.log" 2>&1 &
-        stern spyre-device-plugin -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-device-plugin.log" 2>&1 &
-        stern spyre-webhook-validator -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-webhook-validator.log" 2>&1 &
-        stern spyre-health-checker -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-health-checker.log" 2>&1 &
-        stern spyre-metrics-exporter -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-metrics-exporter.log" 2>&1 &
-        stern secondary-scheduler -n openshift-secondary-scheduler-operator --since="${SINCE}" > "${LOG_DIRECTORY}/secondary-scheduler.log" 2>&1 &
-        stern . -n openshift-marketplace --since="${SINCE}" > "${LOG_DIRECTORY}/openshift-marketplace.log" 2>&1 &
+        # Start log capture in background if stern is available
+        STERN_BIN=$(command -v stern || echo "$HOME/go/bin/stern")
+        if [ -x "$STERN_BIN" ]; then
+          "$STERN_BIN" spyre-operator -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-operator.log" 2>&1 &
+          "$STERN_BIN" spyre-device-plugin -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-device-plugin.log" 2>&1 &
+          "$STERN_BIN" spyre-webhook-validator -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-webhook-validator.log" 2>&1 &
+          "$STERN_BIN" spyre-health-checker -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-health-checker.log" 2>&1 &
+          "$STERN_BIN" spyre-metrics-exporter -n spyre-operator --since="${SINCE}" > "${LOG_DIRECTORY}/spyre-metrics-exporter.log" 2>&1 &
+          "$STERN_BIN" secondary-scheduler -n openshift-secondary-scheduler-operator --since="${SINCE}" > "${LOG_DIRECTORY}/secondary-scheduler.log" 2>&1 &
+          "$STERN_BIN" . -n openshift-marketplace --since="${SINCE}" > "${LOG_DIRECTORY}/openshift-marketplace.log" 2>&1 &
+        fi
 
         echo "Log capture started in background"
         echo "Log files will be saved to: ${LOG_DIRECTORY}"

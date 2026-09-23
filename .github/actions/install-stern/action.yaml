@@ -66,16 +66,28 @@ runs:
           echo "Stern architecture: ${STERN_ARCH}"
           echo "Download URL: ${STERN_URL}"
 
-          curl --fail --retry 5 -L \
-            "${STERN_URL}" \
-            -o stern.tar.gz
-          tar -xzf stern.tar.gz
-          sudo mv stern /usr/local/bin/
-          sudo chmod +x /usr/local/bin/stern
-          rm stern.tar.gz
+          if curl --fail --retry 5 -L "${STERN_URL}" -o stern.tar.gz 2>/dev/null; then
+            tar -xzf stern.tar.gz
+            sudo mv stern /usr/local/bin/
+            sudo chmod +x /usr/local/bin/stern
+            rm -f stern.tar.gz
+          elif command -v go >/dev/null 2>&1; then
+            echo "Pre-built binary not found for ${STERN_ARCH}. Building stern with Go..."
+            go install github.com/stern/stern@v${STERN_VERSION}
+            if [ -f "$HOME/go/bin/stern" ]; then
+              sudo cp "$HOME/go/bin/stern" /usr/local/bin/stern || true
+              export PATH="$HOME/go/bin:$PATH"
+            fi
+          else
+            echo "WARNING: Could not download or build stern on ${ARCH}"
+          fi
         else
           echo "stern already installed"
         fi
 
         # Verify installation
-        stern --version
+        if command -v stern &> /dev/null; then
+          stern --version
+        elif [ -f "$HOME/go/bin/stern" ]; then
+          "$HOME/go/bin/stern" --version
+        fi
