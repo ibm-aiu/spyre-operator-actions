@@ -54,6 +54,11 @@ on:
         required: false
         type: string
         default: 'main'
+      crc-version:
+        description: "CRC version"
+        required: false
+        type: string
+        default: '2.61.0' # OpenShift 4.21
     secrets:
       crc-pull-secret:
         description: 'CRC pull secret for setting up OpenShift Local (CRC)'
@@ -132,13 +137,14 @@ jobs:
         test-tag: ${{ steps.clone-pr.outputs.component-tag }}
 
     - name: Set up CRC
-      uses: crc-org/crc-github-action@v1
+      uses: crc-org/crc-github-action@v1.0.1
       with:
         preset: openshift
         pull-secret: ${{ secrets.crc-pull-secret || secrets.CRC_PULL_SECRET }}
         memory: 15200
         cpus: 16
         disk: 128
+        version: ${{ inputs.crc-version }}
 
     # Reusable action: Login to CRC cluster and configure registry access
     # Updates the global pull secret to enable pulling images from the specified registry
