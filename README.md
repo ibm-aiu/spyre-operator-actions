@@ -13,6 +13,7 @@ Reusable GitHub Actions workflows for spyre-operator CI/CD pipeline.
 | [create-release.yaml](.github/workflows/create-release.yaml) | Create GitHub release from VERSION file | Release automation |
 | [sonarqube-scan.yaml](.github/workflows/sonarqube-scan.yaml) | Perform Sonar Qube scan on repository | code quality |
 | [auto-label-pr.yaml](.github/workflows/auto-label-pr.yaml) | Automatically label PRs based on title prefix | PR automation |
+| [rh-image-certification.yaml](.github/workflows/rh-image-certification.yaml) | Run Red Hat preflight container checks and optionally submit for image certification | Red Hat certification |
 
 ## Workflow Inputs Reference
 
@@ -325,6 +326,69 @@ PR Title: "chore: update dependencies"
 
 - PR title should follow conventional commit format with prefix
 - Labels (enhancement, semver-major, bug, chore) should exist in the repository
+
+### Red Hat Image Certification Workflow
+
+```yaml
+jobs:
+  rh-image-certification:
+    uses: ibm-aiu/spyre-operator-actions/.github/workflows/rh-image-certification.yaml@main
+    with:
+      image: quay.io/ibm-aiu/spyre-operator  # Image repository without tag (required)
+      tag: '1.4.0'                           # Image tag (default: VERSION file)
+      component_id: ${{ vars.RHCERT_COMPONENT_ID }}  # Certification component ID
+      platform: ''                           # Single arch to check (default: all)
+      submit: false                          # Submit results to Red Hat (default: false)
+      preflight_version: '1.21.1'            # openshift-preflight release
+    secrets:
+      registry-username: ${{ secrets.REGISTRY_USERNAME }}  # Private image only (optional)
+      registry-password: ${{ secrets.REGISTRY_PASSWORD }}  # Private image only (optional)
+```
+
+**Inputs:**
+
+- `image` (required): Image repository without tag
+  - Type: string
+  - Example: `quay.io/ibm-aiu/spyre-operator`
+- `tag` (optional): Image tag to certify
+  - Type: string
+  - Default: content of the `VERSION` file
+- `component_id` (optional): Certification component ID from Partner Connect
+  - Type: string
+  - Default: `vars.RHCERT_COMPONENT_ID`
+  - Taken from `connect.redhat.com/component/view/<component_id>/images`; this may differ from the PID on the overview page
+  - Required when `submit` is `true`
+- `platform` (optional): Single architecture to check (e.g. `amd64`)
+  - Type: string
+  - Default: `''` (every platform in the manifest list)
+- `submit` (optional): Submit the results to Red Hat after all checks pass
+  - Type: boolean
+  - Default: `false`
+- `preflight_version` (optional): [openshift-preflight](https://github.com/redhat-openshift-ecosystem/openshift-preflight) release to use
+  - Type: string
+  - Default: `'1.21.1'`
+
+**Secrets:**
+
+- `PYXIS_API_TOKEN` (required for submit): Partner Connect API key
+  - Set it as an environment secret on the `rh-certification` environment of the caller repository; it takes precedence over a value passed through `workflow_call`
+- `registry-username` / `registry-password` (optional): Pull credentials for a private image
+  - Used only by the `check` job (passed to preflight as `--docker-config`)
+  - With `--submit`, preflight uploads the docker config to the Pyxis certification project. To keep these credentials from being sent to Red Hat, the `submit` job fails when they are set
+
+**Jobs:**
+
+1. `check`: Runs `preflight check container` without submitting, writes a results table to the job summary, fails if any platform does not pass, and uploads the preflight artifacts
+2. `submit`: Runs only when `submit` is `true` and `check` passed. Runs in the `rh-certification` environment (configure required reviewers there to add an approval gate) and re-runs preflight with `--submit`
+
+**Permissions:**
+
+- `contents: read`: Required to read the `VERSION` file
+
+**Requirements:**
+
+- The image must be pushed to the registry configured for the certification component
+- Submission is only supported for public images
 
 ## Advanced Usage
 
