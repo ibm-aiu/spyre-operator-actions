@@ -13,16 +13,6 @@ on:
         required: true
         type: string
         default: 'minor'
-      operator_sdk_version:
-        description: 'Operator SDK version to install (only for spyre-operator projects)'
-        required: false
-        type: string
-        default: 'v1.38.0'
-      allow_skew_version:
-        description: 'Allow version skew between components and operator (default: false)'
-        required: false
-        type: boolean
-        default: false
   workflow_call:
     inputs:
       version_bump:
@@ -30,16 +20,6 @@ on:
         required: true
         type: string
         default: 'minor'
-      operator_sdk_version:
-        description: 'Operator SDK version to install (only for spyre-operator projects)'
-        required: false
-        type: string
-        default: 'v1.38.0'
-      allow_skew_version:
-        description: 'Allow version skew between components and operator (default: false)'
-        required: false
-        type: boolean
-        default: false
     outputs:
       branch_name:
         description: 'The created branch name for the version patch'
@@ -89,145 +69,6 @@ jobs:
         echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
         echo "New version: ${NEW_VERSION}"
 
-    - name: Check if spyre-operator project
-      id: check_project
-      run: |
-        REPO_NAME=$(basename ${{ github.repository }})
-        echo "repo_name=${REPO_NAME}" >> $GITHUB_OUTPUT
-        if [[ "${REPO_NAME}" == "spyre-operator" ]]; then
-          echo "is_spyre_operator=true" >> $GITHUB_OUTPUT
-          echo "This is a spyre-operator project"
-        fi
-
-    - name: Retrieve and validate component versions
-      if: steps.check_project.outputs.is_spyre_operator == 'true'
-      id: component_versions
-      env:
-        NEW_VERSION: ${{ steps.increment_version.outputs.new_version }}
-        ALLOW_SKEW: ${{ inputs.allow_skew_version }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        COMPONENTS=("spyre-device-plugin" "spyre-scheduler-plugins" "spyre-webhook-validator" "spyre-health-checker" "dra-driver-spyre")
-        VALIDATION_FAILED=false
-        
-        echo "Retrieving component versions..."
-        echo "Allow version skew: ${ALLOW_SKEW}"
-
-        if [ "${ALLOW_SKEW}" = "false" ]; then
-          echo "Version validation enabled - all components must match version: ${NEW_VERSION}"
-        fi
-
-        for COMPONENT in "${COMPONENTS[@]}"; do
-          echo "Checking ${COMPONENT}..."
-          
-          # Get the default branch for this component repository
-          DEFAULT_BRANCH=$(curl -sSf -H "Authorization: token ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/ibm-aiu/${COMPONENT}" | \
-            jq -r '.default_branch' 2>/dev/null)
-          
-          if [ -z "${DEFAULT_BRANCH}" ] || [ "${DEFAULT_BRANCH}" = "null" ]; then
-            echo "::error::Could not determine default branch for ${COMPONENT}"
-            VALIDATION_FAILED=true
-            continue
-          fi
-          
-          echo "  Using default branch: ${DEFAULT_BRANCH}"
-          
-          VERSION_URL="https://raw.githubusercontent.com/ibm-aiu/${COMPONENT}/refs/heads/${DEFAULT_BRANCH}/VERSION"
-
-          if VERSION=$(curl -sSf "${VERSION_URL}" 2>/dev/null); then
-            VERSION_WITH_DEV="${VERSION}-dev"
-            echo "${COMPONENT}_version=${VERSION_WITH_DEV}" >> $GITHUB_OUTPUT
-            echo "  ${COMPONENT}: ${VERSION_WITH_DEV} (from ${DEFAULT_BRANCH})"
-
-            # Validate version if skew is not allowed
-            if [ "${ALLOW_SKEW}" = "false" ] && [ "${VERSION}" != "${NEW_VERSION}" ]; then
-              echo "::error::Version mismatch for ${COMPONENT}: expected ${NEW_VERSION}, got ${VERSION}"
-              VALIDATION_FAILED=true
-            fi
-          else
-            echo "::error::VERSION file not found for ${COMPONENT} on branch ${DEFAULT_BRANCH}"
-            VALIDATION_FAILED=true
-          fi
-        done
-
-        if [ "${VALIDATION_FAILED}" = "true" ]; then
-          echo "::error::Version validation failed. Component versions must match NEW_VERSION (${NEW_VERSION}) when allow_skew_version is false."
-          exit 1
-        fi
-
-        if [ "${ALLOW_SKEW}" = "false" ]; then
-          echo "✓ All component versions validated successfully"
-        fi
-
-    - name: Update release-artifacts.yaml with component versions
-      if: steps.check_project.outputs.is_spyre_operator == 'true'
-      run: |
-        if [ ! -f "release-artifacts.yaml" ]; then
-          echo "release-artifacts.yaml not found, skipping update"
-          exit 0
-        fi
-        
-        echo "Updating release-artifacts.yaml with component versions..."
-
-        # Update component versions from VERSION files
-        yq eval '.devicePlugin.version = "${{ steps.component_versions.outputs.spyre-device-plugin_version }}"' -i release-artifacts.yaml
-        echo "  Updated devicePlugin to ${{ steps.component_versions.outputs.spyre-device-plugin_version }}"
-
-        yq eval '.scheduler.version = "${{ steps.component_versions.outputs.spyre-scheduler-plugins_version }}"' -i release-artifacts.yaml
-        echo "  Updated scheduler to ${{ steps.component_versions.outputs.spyre-scheduler-plugins_version }}"
-        
-        yq eval '.podValidator.version = "${{ steps.component_versions.outputs.spyre-webhook-validator_version }}"' -i release-artifacts.yaml
-        echo "  Updated podValidator to ${{ steps.component_versions.outputs.spyre-webhook-validator_version }}"
-        
-        yq eval '.healthChecker.version = "${{ steps.component_versions.outputs.spyre-health-checker_version }}"' -i release-artifacts.yaml
-        echo "  Updated healthChecker to ${{ steps.component_versions.outputs.spyre-health-checker_version }}"
-
-        yq eval '.draDriver.version = "${{ steps.component_versions.outputs.dra-driver-spyre_version }}"' -i release-artifacts.yaml
-        echo "  Updated draDriver to ${{ steps.component_versions.outputs.dra-driver-spyre_version }}"
-
-        # Update non-public component versions including exporter, and devicePluginInit
-        # Use dev version in release artifacts, but use current version in test/config.yaml with quay.io/ibm-aiu public registry
-
-        yq eval '.exporter.version = "${{ steps.increment_version.outputs.new_version }}-dev"' -i release-artifacts.yaml
-        echo "  Updated exporter to ${{ steps.increment_version.outputs.new_version }}-dev in release-artifacts.yaml"
-        yq eval '.exporter.version = "${{ steps.current_version.outputs.version }}"' -i test/config.yaml
-        echo "  Updated exporter to ${{ steps.current_version.outputs.version }} in test/config.yaml"
-        yq eval '.mockUser.version = "${{ steps.current_version.outputs.version }}"' -i test/config.yaml
-        echo "  Updated mockUser to ${{ steps.current_version.outputs.version }} in test/config.yaml"
-
-        yq eval '.devicePluginInit.version = "${{ steps.component_versions.outputs.spyre-device-plugin_version }}"' -i release-artifacts.yaml
-        echo "  Updated devicePluginInit to ${{ steps.component_versions.outputs.spyre-device-plugin_version }} in release-artifacts.yaml"
-        yq eval '.devicePluginInit.version = "${{ steps.current_version.outputs.version }}"' -i test/config.yaml
-        echo "  Updated devicePluginInit to ${{ steps.current_version.outputs.version }} in test/config.yaml"
-
-        echo "release-artifacts.yaml update complete"
-
-        make propagate-version VERSION=$(cat VERSION)-dev
-        echo "Propagated version for components"
-
-    - name: Install operator-sdk
-      if: steps.check_project.outputs.is_spyre_operator == 'true'
-      run: |
-        export ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n $(uname -m) ;; esac)
-        export OS=$(uname | awk '{print tolower($0)}')
-        export OPERATOR_SDK_DL_URL=https://github.com/operator-framework/operator-sdk/releases/download/${{ inputs.operator_sdk_version }}
-        curl -LO ${OPERATOR_SDK_DL_URL}/operator-sdk_${OS}_${ARCH}
-        chmod +x operator-sdk_${OS}_${ARCH}
-        sudo mv operator-sdk_${OS}_${ARCH} /usr/local/bin/operator-sdk
-        operator-sdk version
-
-    - name: Run make bundle
-      if: steps.check_project.outputs.is_spyre_operator == 'true'
-      run: |
-        make bundle
-
-    - name: Run make propagate-version (dev)
-      if: steps.check_project.outputs.is_spyre_operator == 'true'
-      run: |
-        make propagate-version VERSION=$(cat VERSION)-dev
-        echo "Propagated version for operator"
-
     - name: Create Pull Request
       id: create_pr
       uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
@@ -268,7 +109,6 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "- **Previous Version**: ${{ steps.current_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
         echo "- **New Version**: ${{ steps.increment_version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Version Bump Type**: ${{ github.event.inputs.version_bump }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Branch**: ${{ steps.set_branch_name.outputs.branch_name }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Pull Request**: ${{ steps.create_pr.outputs.pull-request-url }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
