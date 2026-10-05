@@ -58,11 +58,11 @@ runs:
 
         # Set defaults if empty (for push events)
         if [ -z "$OPERATOR_VERSION" ]; then
-          OPERATOR_VERSION="1.5.0-dev"
+          OPERATOR_VERSION="1.6.0-dev"
         fi
 
         if [ -z "$OPERATOR_CHANNEL" ]; then
-          OPERATOR_CHANNEL="fast-v1.5"
+          OPERATOR_CHANNEL="fast-v1.6"
         fi
 
         echo "operator-version=${OPERATOR_VERSION}" >> $GITHUB_OUTPUT
