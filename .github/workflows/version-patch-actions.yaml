@@ -1,0 +1,68 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: Version Patch Workflow - GitHub Actions
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type (minor or major)'
+        required: true
+        type: choice
+        options:
+          - minor
+          - major
+        default: 'minor'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version-patch:
+    uses: ./.github/workflows/version-patch.yaml
+    with:
+      version_bump: ${{ inputs.version_bump }}
+
+  update-resolve-e2e-params:
+    name: Update Resolve E2E Params Version
+    needs: version-patch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout version patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version-patch.outputs.branch_name }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update operator version and channel in resolve-e2e-params action
+        run: |
+          NEW_VERSION="${{ needs.version-patch.outputs.new_version }}"
+          echo "Updating resolve-e2e-params action with new version: ${NEW_VERSION}"
+
+          # Extract major.minor for the channel (e.g., 1.5 from 1.5.0)
+          MAJOR_MINOR=$(echo "${NEW_VERSION}" | cut -d'.' -f1,2)
+
+          ACTION_FILE=".github/actions/resolve-e2e-params/action.yaml"
+
+          # Update OPERATOR_VERSION default (e.g., OPERATOR_VERSION="1.5.0-dev")
+          sed -i -E "s/OPERATOR_VERSION=\"[0-9]+\.[0-9]+\.[0-9]+(-dev)?\"/OPERATOR_VERSION=\"${NEW_VERSION}-dev\"/g" "${ACTION_FILE}"
+
+          # Update OPERATOR_CHANNEL default (e.g., OPERATOR_CHANNEL="fast-v1.5")
+          sed -i -E "s/OPERATOR_CHANNEL=\"fast-v[0-9]+\.[0-9]+\"/OPERATOR_CHANNEL=\"fast-v${MAJOR_MINOR}\"/g" "${ACTION_FILE}"
+
+          git diff "${ACTION_FILE}"
+
+      - name: Commit and push changes
+        uses: planetscale/ghcommit-action@25309d8005ac7c3bcd61d3fe19b69e0fe47dbdde # v0.2.20
+        with:
+          commit_message: "chore: update artifacts and bundle to ${{ env.NEW_VERSION
+            }}"
+          repo: ${{ github.repository }}
+          branch: ${{ needs.version-patch.outputs.branch_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
