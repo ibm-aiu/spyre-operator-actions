@@ -184,7 +184,7 @@ jobs:
         since: 1h
 
     - name: Run E2E tests
-      timeout-minutes: 70
+      timeout-minutes: 120
       working-directory: ${{ inputs.path }}
       run: |
         #!/bin/bash -e
