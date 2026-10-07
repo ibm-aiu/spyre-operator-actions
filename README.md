@@ -573,7 +573,7 @@ jobs:
 - `PYXIS_API_TOKEN`, `CERT_GITHUB_TOKEN`, `CERT_FORK_SSH_KEY` (required for submit): Set them as environment secrets on the `rh-certification` environment of the caller repository
   - `PYXIS_API_TOKEN`: Partner Connect API key
   - `CERT_GITHUB_TOKEN`: GitHub token that can sync `fork_repository` with upstream and open a pull request against `upstream_repository`
-  - `CERT_FORK_SSH_KEY`: SSH private key (e.g. a deploy key) with write access to `fork_repository`
+  - `CERT_FORK_SSH_KEY`: Private key of a deploy key dedicated to this workflow, with write access to `fork_repository` only. Do not use a personal SSH key (see **Deploy key for the fork** below)
 
 **What it does:**
 
@@ -592,6 +592,24 @@ jobs:
 
 > [!IMPORTANT]
 > A bundle version can be certified only once. Run a dry-run with the same bundle before submitting.
+
+**Deploy key for the fork:**
+
+On submit, the `commit-pinned-digest` task of the pipeline pushes `<package>-<version>-pinned` to the fork. This task accepts only an SSH key (`ssh-dir` workspace), which is the method documented for `pin_digests=true` in the [CI pipeline guide](https://github.com/redhat-openshift-ecosystem/certification-releases/blob/main/4.9/ga/ci-pipeline.md#digest-pinning-config). A personal access token cannot be used there: putting it in `git_repo_url` would expose it in the pipeline logs, which are uploaded to Red Hat on submit.
+
+Create a key pair only for this workflow and register it as a deploy key of `fork_repository`, so that it can write to the fork only:
+
+1. Create a key pair without a passphrase (the task loads it with `ssh-add` non-interactively):
+
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C rh-bundle-certification -f rh-bundle-certification
+   ```
+
+2. Add `rh-bundle-certification.pub` to **Settings > Deploy keys** of `fork_repository` with **Allow write access**
+3. Set the content of `rh-bundle-certification` (the private key) as the `CERT_FORK_SSH_KEY` environment secret on `rh-certification`, then delete the local files
+4. To revoke it, delete the deploy key from the fork
+
+The key is used only on submit, after the `rh-certification` approval; dry-runs never receive it. The workflow uses it to push `<package>-<version>` from the runner and stores it in the `github-ssh-credentials` Secret of the CRC cluster, which is deleted with the cluster.
 
 **Permissions:**
 
