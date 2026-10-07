@@ -1,0 +1,725 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+# Run the Red Hat operator bundle certification pipeline (operator-ci-pipeline
+# from operator-pipelines) on an OpenShift Local (CRC) cluster provisioned by
+# the Operator Certification Operator, and, optionally, submit the results and
+# open a pull request against redhat-openshift-ecosystem/certified-operators.
+#
+# The bundle directory of the source repository is copied to
+# operators/<package>/<version> of certified-operators with these edits:
+#   - IMAGE_SOURCE_PREFIX is replaced with IMAGE_TARGET_PREFIX in the CSV
+#   - `default: IMAGE_SOURCE_PREFIX/...` lines are removed from other manifests
+#   - `fast-` channels are renamed to `stable-` in metadata/annotations.yaml
+#
+# Dry-run (submit=false, the default; used for scheduled and PR runs):
+#   The prepared branch is served from a temporary git daemon on the runner, so
+#   nothing is written to GitHub. The pipeline pushes the digest-pinned branch
+#   to that daemon and the pinning diff is uploaded as an artifact.
+#   `operator_image` can replace the operator image in the CSV (e.g. with an
+#   unreleased -dev image). The image is copied into the CRC internal registry,
+#   using operator-image-registry-username and
+#   operator-image-registry-password when it is private.
+#
+# Submit (submit=true):
+#   Only allowed when the run was started manually (workflow_dispatch). The job
+#   runs in the `rh-certification` environment, which holds the secrets below
+#   and can be configured with required reviewers as an approval gate.
+#   The fork is synchronized with upstream, the branch <package>-<version> is
+#   pushed to the fork, and the pipeline pushes <branch>-pinned and opens the
+#   pull request. `operator_image` and registry credentials are refused.
+#
+# Secrets (environment secrets on `rh-certification`, used only on submit):
+#   PYXIS_API_TOKEN       Partner Connect API key
+#   CERT_GITHUB_TOKEN     GitHub token that can sync the fork and open a pull
+#                         request against the upstream repository
+#   CERT_FORK_SSH_KEY     SSH private key (e.g. deploy key) with write access to
+#                         the fork
+
+name: Red Hat Bundle Certification
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'GitHub runner to use'
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
+      repository:
+        description: 'Repository containing the operator bundle'
+        required: false
+        type: string
+        default: 'ibm-aiu/spyre-operator'
+      ref:
+        description: 'Branch, tag or SHA of the repository. Empty uses the default
+          branch.'
+        required: false
+        type: string
+      bundle_dir:
+        description: 'Bundle directory in the repository'
+        required: false
+        type: string
+        default: 'bundle'
+      operator_image:
+        description: 'Dry-run only: operator image to use instead of the one in
+          the CSV (e.g., ghcr.io/ibm-aiu/spyre-operator:1.5.0-dev)'
+        required: false
+        type: string
+      submit:
+        description: 'Submit the results and open a pull request to certified-operators'
+        required: false
+        type: boolean
+        default: false
+      fork_repository:
+        description: 'Fork of certified-operators used on submit'
+        required: false
+        type: string
+        default: 'ibm-aiu/certified-operators'
+      upstream_repository:
+        description: 'Upstream certified-operators repository'
+        required: false
+        type: string
+        default: 'redhat-openshift-ecosystem/certified-operators'
+      crc_version:
+        description: 'CRC version'
+        required: false
+        type: string
+        default: '2.61.0' # OpenShift 4.21
+      operator_pipelines_release:
+        description: 'operator-pipelines release installed by the Operator Certification
+          Operator'
+        required: false
+        type: string
+        default: 'main'
+  workflow_call:
+    inputs:
+      runner:
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
+      repository:
+        required: false
+        type: string
+        default: 'ibm-aiu/spyre-operator'
+      ref:
+        required: false
+        type: string
+      bundle_dir:
+        required: false
+        type: string
+        default: 'bundle'
+      operator_image:
+        required: false
+        type: string
+      submit:
+        required: false
+        type: boolean
+        default: false
+      fork_repository:
+        required: false
+        type: string
+        default: 'ibm-aiu/certified-operators'
+      upstream_repository:
+        required: false
+        type: string
+        default: 'redhat-openshift-ecosystem/certified-operators'
+      crc_version:
+        required: false
+        type: string
+        default: '2.61.0' # OpenShift 4.21
+      operator_pipelines_release:
+        required: false
+        type: string
+        default: 'main'
+    secrets:
+      crc-pull-secret:
+        description: 'CRC pull secret for setting up OpenShift Local (CRC)'
+        required: false
+      CRC_PULL_SECRET:
+        description: 'Fallback for crc-pull-secret (repository secret on workflow_dispatch)'
+        required: false
+      operator-image-registry-username:
+        description: 'Registry username for a private operator_image (dry-run only)'
+        required: false
+      operator-image-registry-password:
+        description: 'Registry password or token for a private operator_image (dry-run
+          only)'
+        required: false
+      PYXIS_API_TOKEN:
+        description: 'Partner Connect API key. Prefer an environment secret on
+          rh-certification, which takes precedence over a passed value.'
+        required: false
+      CERT_GITHUB_TOKEN:
+        description: 'GitHub token to sync the fork and open the pull request. Prefer
+          an environment secret on rh-certification.'
+        required: false
+      CERT_FORK_SSH_KEY:
+        description: 'SSH private key with write access to the fork. Prefer an
+          environment secret on rh-certification.'
+        required: false
+
+# Serialize submissions; dry-runs are not limited here (callers set their own).
+concurrency:
+  group: rh-bundle-certification-${{ inputs.submit && 'submit' || github.run_id }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  IMAGE_SOURCE_PREFIX: docker.io/spyre-operator
+  IMAGE_TARGET_PREFIX: quay.io/ibm-aiu
+  OCO_NAMESPACE: oco
+  INTERNAL_REGISTRY: image-registry.openshift-image-registry.svc:5000
+  CRC_REGISTRY: default-route-openshift-image-registry.apps-crc.testing
+  # Default gitInitImage of operator-ci-pipeline; used to check the git daemon.
+  GIT_INIT_IMAGE: registry.redhat.io/openshift-pipelines/pipelines-git-init-rhel9@sha256:56e27c58ded3b0d8aab1a585ef55aa543f7cf78f36060086fec00d0a1c42bc18
+  ARTIFACTS_DIR: ${{ github.workspace }}/rhcert-artifacts
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+    - name: Validate trigger and inputs
+      env:
+        SUBMIT: ${{ inputs.submit }}
+        EVENT_NAME: ${{ github.event_name }}
+        OPERATOR_IMAGE: ${{ inputs.operator_image }}
+        OPERATOR_IMAGE_REGISTRY_USERNAME: ${{ secrets.operator-image-registry-username }}
+        OPERATOR_IMAGE_REGISTRY_PASSWORD: ${{ secrets.operator-image-registry-password }}
+      run: |
+        if [ "$SUBMIT" != "true" ]; then
+          echo "Dry-run: results are not submitted."
+          exit 0
+        fi
+        # Scheduled and PR runs must always be dry-runs.
+        if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+          echo "::error::submit=true is only allowed for manually started runs (workflow_dispatch), not '${EVENT_NAME}'"
+          exit 1
+        fi
+        if [ -n "$OPERATOR_IMAGE" ]; then
+          echo "::error::operator_image is for dry-runs only; the submitted bundle must reference ${IMAGE_TARGET_PREFIX}"
+          exit 1
+        fi
+        if [ -n "$OPERATOR_IMAGE_REGISTRY_USERNAME" ] || [ -n "$OPERATOR_IMAGE_REGISTRY_PASSWORD" ]; then
+          echo "::error::operator-image-registry-username/operator-image-registry-password are for dry-runs only; refusing to submit"
+          exit 1
+        fi
+
+  certify:
+    needs: validate
+    permissions:
+      contents: read
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
+    environment: ${{ inputs.submit && 'rh-certification' || '' }}
+    timeout-minutes: 240
+    steps:
+    - name: Validate submission secrets
+      if: inputs.submit
+      env:
+        PYXIS_API_TOKEN: ${{ secrets.PYXIS_API_TOKEN }}
+        CERT_GITHUB_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
+        CERT_FORK_SSH_KEY: ${{ secrets.CERT_FORK_SSH_KEY }}
+      run: |
+        RC=0
+        for name in PYXIS_API_TOKEN CERT_GITHUB_TOKEN CERT_FORK_SSH_KEY; do
+          if [ -z "${!name}" ]; then
+            echo "::error::${name} secret is not set in the rh-certification environment"
+            RC=1
+          fi
+        done
+        exit $RC
+
+    # source: github verifies the release checksum (the mirror source does not).
+    - name: Install tkn
+      uses: redhat-actions/openshift-tools-installer@37eb3cfb20ac2df6f0511ffa71cd917e4d49cabf # v3.1
+      with:
+        source: github
+        tkn: '0.46'
+
+    - name: Checkout ${{ inputs.repository }}
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        path: source
+
+    - name: Resolve bundle metadata
+      id: bundle
+      env:
+        BUNDLE_DIR: source/${{ inputs.bundle_dir }}
+      run: |
+        set -euo pipefail
+        CSV=$(find "$BUNDLE_DIR/manifests" -maxdepth 1 -name '*.clusterserviceversion.yaml')
+        if [ "$(echo "$CSV" | grep -c .)" -ne 1 ]; then
+          echo "::error::Expected exactly one CSV under $BUNDLE_DIR/manifests"
+          exit 1
+        fi
+        PACKAGE=$(yq '.annotations."operators.operatorframework.io.bundle.package.v1"' "$BUNDLE_DIR/metadata/annotations.yaml")
+        VERSION=$(yq '.spec.version' "$CSV")
+        if [ -z "$PACKAGE" ] || [ "$PACKAGE" = "null" ] || [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+          echo "::error::Could not read the package name or version from the bundle"
+          exit 1
+        fi
+        {
+          echo "package=${PACKAGE}"
+          echo "version=${VERSION}"
+          echo "branch=${PACKAGE}-${VERSION}"
+          echo "bundle-path=operators/${PACKAGE}/${VERSION}"
+        } >> "$GITHUB_OUTPUT"
+        echo "Bundle: ${PACKAGE} ${VERSION}"
+
+    - name: Prepare certified-operators branch
+      id: branch
+      env:
+        SUBMIT: ${{ inputs.submit }}
+        BUNDLE_DIR: ${{ github.workspace }}/source/${{ inputs.bundle_dir }}
+        PACKAGE: ${{ steps.bundle.outputs.package }}
+        BRANCH: ${{ steps.bundle.outputs.branch }}
+        BUNDLE_PATH: ${{ steps.bundle.outputs.bundle-path }}
+        OPERATOR_IMAGE: ${{ inputs.operator_image }}
+        FORK: ${{ inputs.fork_repository }}
+        UPSTREAM: ${{ inputs.upstream_repository }}
+        GH_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        if [ "$SUBMIT" = "true" ]; then
+          # Same as resetting the fork's main to upstream in the manual procedure,
+          # but without force-pushing.
+          gh api -X POST "repos/${FORK}/merge-upstream" -f branch=main
+          REPO_URL="https://github.com/${FORK}.git"
+        else
+          REPO_URL="https://github.com/${UPSTREAM}.git"
+        fi
+        git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" certified-operators
+        cd certified-operators
+        git sparse-checkout set "operators/${PACKAGE}"
+
+        if [ "$SUBMIT" = "true" ]; then
+          if [ -n "$(git ls-remote --heads origin "$BRANCH" "${BRANCH}-pinned")" ]; then
+            echo "::error::${BRANCH} or ${BRANCH}-pinned already exists in ${FORK}; delete it before submitting again"
+            exit 1
+          fi
+        fi
+        if [ ! -f "operators/${PACKAGE}/ci.yaml" ]; then
+          echo "::error::operators/${PACKAGE}/ci.yaml (cert_project_id) is missing in ${UPSTREAM}"
+          exit 1
+        fi
+        if [ -e "$BUNDLE_PATH" ]; then
+          if [ "$SUBMIT" = "true" ]; then
+            echo "::error::${BUNDLE_PATH} already exists upstream; bump the bundle version"
+            exit 1
+          fi
+          echo "::warning::${BUNDLE_PATH} already exists upstream; replacing it for the dry-run"
+          rm -rf "$BUNDLE_PATH"
+        fi
+
+        git switch -c "$BRANCH"
+        cp -a "$BUNDLE_DIR" "$BUNDLE_PATH"
+
+        # Edits from the manual procedure (bundle-cert.md, "Copy bundle data").
+        CSV=$(find "$BUNDLE_PATH/manifests" -maxdepth 1 -name '*.clusterserviceversion.yaml')
+        perl -pi -e 's/\Q$ENV{IMAGE_SOURCE_PREFIX}\E/$ENV{IMAGE_TARGET_PREFIX}/g' "$CSV"
+        find "$BUNDLE_PATH/manifests" -name '*.yaml' ! -name '*.clusterserviceversion.yaml' \
+          -exec perl -ni -e 'print unless /^\s*default:\s*\Q$ENV{IMAGE_SOURCE_PREFIX}\E\//' {} +
+        perl -pi -e 's/fast-/stable-/g if /^\s*operators\.operatorframework\.io\.bundle\.channel(s|\.default)\.v1:/' \
+          "$BUNDLE_PATH/metadata/annotations.yaml"
+        if grep -rn -F "$IMAGE_SOURCE_PREFIX" "$BUNDLE_PATH"; then
+          echo "::error::${IMAGE_SOURCE_PREFIX} is still referenced in the bundle"
+          exit 1
+        fi
+
+        if [ -n "$OPERATOR_IMAGE" ]; then
+          CSV_IMAGE=$(yq '.metadata.annotations.containerImage' "$CSV")
+          NAME=${OPERATOR_IMAGE##*/}
+          NAME=${NAME%%[:@]*}
+          TEST_IMAGE="${INTERNAL_REGISTRY}/${OCO_NAMESPACE}/${NAME}:rhcert-dry-run"
+          CSV_IMAGE="$CSV_IMAGE" TEST_IMAGE="$TEST_IMAGE" \
+            perl -pi -e 's/\Q$ENV{CSV_IMAGE}\E/$ENV{TEST_IMAGE}/g' "$CSV"
+          echo "test-image=${TEST_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Operator image ${CSV_IMAGE} is replaced with ${TEST_IMAGE} (copied from ${OPERATOR_IMAGE})"
+        fi
+
+        mkdir -p "$ARTIFACTS_DIR"
+        cp -a "$BUNDLE_PATH" "$ARTIFACTS_DIR/bundle"
+        git add -A
+        git -c user.name="github-actions[bot]" \
+          -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+          commit -q -m "operator ${PACKAGE} (${BUNDLE_PATH##*/})"
+        git show --stat HEAD
+
+    - name: Push branch to the fork
+      if: inputs.submit
+      working-directory: certified-operators
+      env:
+        FORK: ${{ inputs.fork_repository }}
+        BRANCH: ${{ steps.bundle.outputs.branch }}
+        CERT_FORK_SSH_KEY: ${{ secrets.CERT_FORK_SSH_KEY }}
+      run: |
+        set -euo pipefail
+        SSH_DIR="${RUNNER_TEMP}/ssh"
+        mkdir -m 700 "$SSH_DIR"
+        printf '%s\n' "$CERT_FORK_SSH_KEY" > "$SSH_DIR/id_rsa"
+        chmod 600 "$SSH_DIR/id_rsa"
+        # Host keys from the GitHub API (authenticated by TLS) instead of ssh-keyscan.
+        curl -fsSL --proto =https --proto-redir =https https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$SSH_DIR/known_hosts"
+        export GIT_SSH_COMMAND="ssh -i $SSH_DIR/id_rsa -o IdentitiesOnly=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts"
+        git push "git@github.com:${FORK}.git" "HEAD:refs/heads/${BRANCH}"
+
+    - name: Set up CRC
+      uses: crc-org/crc-github-action@466b8741bd91b9ee59f37db92b69f285cacada41 # v1.0.1
+      with:
+        preset: openshift
+        pull-secret: ${{ secrets.crc-pull-secret || secrets.CRC_PULL_SECRET }}
+        memory: 15200
+        cpus: 16
+        disk: 128
+        version: ${{ inputs.crc_version }}
+
+    - name: Log in to CRC
+      run: |
+        oc login -u kubeadmin -p "$(cat ~/.crc/machines/crc/kubeadmin-password)" \
+          https://api.crc.testing:6443 --insecure-skip-tls-verify=true
+        oc create namespace "$OCO_NAMESPACE"
+
+    - name: Copy operator image to CRC
+      if: inputs.operator_image != ''
+      env:
+        OPERATOR_IMAGE: ${{ inputs.operator_image }}
+        TEST_IMAGE: ${{ steps.branch.outputs.test-image }}
+        OPERATOR_IMAGE_REGISTRY_USERNAME: ${{ secrets.operator-image-registry-username }}
+        OPERATOR_IMAGE_REGISTRY_PASSWORD: ${{ secrets.operator-image-registry-password }}
+      run: |
+        set -euo pipefail
+        SRC_ARGS=()
+        if [ -n "$OPERATOR_IMAGE_REGISTRY_USERNAME" ] && [ -n "$OPERATOR_IMAGE_REGISTRY_PASSWORD" ]; then
+          AUTHFILE="${RUNNER_TEMP}/src-auth.json"
+          AUTH=$(printf '%s:%s' "$OPERATOR_IMAGE_REGISTRY_USERNAME" "$OPERATOR_IMAGE_REGISTRY_PASSWORD" | base64 -w0)
+          jq -n --arg r "${OPERATOR_IMAGE%%/*}" --arg a "$AUTH" '{auths: {($r): {auth: $a}}}' > "$AUTHFILE"
+          chmod 600 "$AUTHFILE"
+          SRC_ARGS+=(--src-authfile "$AUTHFILE")
+        fi
+        skopeo copy "${SRC_ARGS[@]}" \
+          --dest-creds "kubeadmin:$(oc whoami -t)" --dest-tls-verify=false \
+          "docker://${OPERATOR_IMAGE}" "docker://${CRC_REGISTRY}/${TEST_IMAGE#*/}"
+        rm -f "${RUNNER_TEMP}/src-auth.json"
+        # The operator under test may be installed into another namespace.
+        oc policy add-role-to-group system:image-puller system:serviceaccounts -n "$OCO_NAMESPACE"
+
+    - name: Install OpenShift Pipelines and Operator Certification Operator
+      timeout-minutes: 30
+      env:
+        OPERATOR_PIPELINES_RELEASE: ${{ inputs.operator_pipelines_release }}
+      run: |
+        set -euo pipefail
+        wait_for() {
+          local desc=$1; shift
+          for _ in $(seq 1 90); do
+            if "$@" >/dev/null 2>&1; then
+              echo "${desc}: ready"
+              return 0
+            fi
+            sleep 10
+          done
+          echo "::error::Timed out waiting for ${desc}"
+          return 1
+        }
+        catalog_ready() {
+          [ "$(oc get catalogsource "$1" -n openshift-marketplace \
+            -o jsonpath='{.status.connectionState.lastObservedState}')" = "READY" ]
+        }
+        csv_succeeded() {
+          local csv
+          csv=$(oc get subscription "$2" -n "$1" -o jsonpath='{.status.installedCSV}')
+          [ -n "$csv" ] && [ "$(oc get csv "$csv" -n "$1" -o jsonpath='{.status.phase}')" = "Succeeded" ]
+        }
+
+        wait_for "catalog redhat-operators" catalog_ready redhat-operators
+        wait_for "catalog certified-operators" catalog_ready certified-operators
+
+        # Install the Red Hat build explicitly instead of relying on OLM's
+        # dependency resolution, which could pick a community build.
+        oc apply -f - <<'EOF'
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: openshift-pipelines-operator-rh
+          namespace: openshift-operators
+        spec:
+          channel: latest
+          installPlanApproval: Automatic
+          name: openshift-pipelines-operator-rh
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+        wait_for "OpenShift Pipelines" csv_succeeded openshift-operators openshift-pipelines-operator-rh
+        wait_for "TektonConfig" oc get tektonconfig config
+        oc wait tektonconfig/config --for=condition=Ready --timeout=15m
+
+        oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata:
+          name: oco-group
+          namespace: ${OCO_NAMESPACE}
+        spec:
+          upgradeStrategy: Default
+        ---
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: operator-certification-operator
+          namespace: ${OCO_NAMESPACE}
+        spec:
+          channel: alpha
+          installPlanApproval: Automatic
+          name: operator-certification-operator
+          source: certified-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+        wait_for "Operator Certification Operator" csv_succeeded "$OCO_NAMESPACE" operator-certification-operator
+
+        oc apply -f - <<EOF
+        apiVersion: certification.redhat.com/v1alpha1
+        kind: OperatorPipeline
+        metadata:
+          name: operator-pipeline
+          namespace: ${OCO_NAMESPACE}
+        spec:
+          applyCIPipeline: true
+          applyHostedPipeline: false
+          applyReleasePipeline: false
+          gitHubSecretName: github-api-token
+          kubeconfigSecretName: kubeconfig
+          operatorPipelinesRelease: ${OPERATOR_PIPELINES_RELEASE}
+          pyxisSecretName: pyxis-api-secret
+        EOF
+        wait_for "operator-ci-pipeline" oc get pipeline operator-ci-pipeline -n "$OCO_NAMESPACE"
+        wait_for "service account pipeline" oc get serviceaccount pipeline -n "$OCO_NAMESPACE"
+
+    - name: Create pipeline secrets and workspace
+      env:
+        SUBMIT: ${{ inputs.submit }}
+        PYXIS_API_TOKEN: ${{ secrets.PYXIS_API_TOKEN }}
+        CERT_GITHUB_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        KUBECONFIG_FILE="${RUNNER_TEMP}/kubeconfig"
+        oc config view --raw --minify --flatten > "$KUBECONFIG_FILE"
+        oc create secret generic kubeconfig -n "$OCO_NAMESPACE" --from-file=kubeconfig="$KUBECONFIG_FILE"
+        rm -f "$KUBECONFIG_FILE"
+
+        if [ "$SUBMIT" = "true" ]; then
+          oc create secret generic github-api-token -n "$OCO_NAMESPACE" \
+            --from-literal=GITHUB_TOKEN="$CERT_GITHUB_TOKEN"
+          oc create secret generic pyxis-api-secret -n "$OCO_NAMESPACE" \
+            --from-literal=pyxis_api_key="$PYXIS_API_TOKEN"
+          SSH_DIR="${RUNNER_TEMP}/ssh"
+          oc create secret generic github-ssh-credentials -n "$OCO_NAMESPACE" \
+            --from-file=id_rsa="$SSH_DIR/id_rsa" --from-file=known_hosts="$SSH_DIR/known_hosts"
+        else
+          # Not used when submit=false; created so that the OperatorPipeline
+          # status does not report missing secrets.
+          oc create secret generic github-api-token -n "$OCO_NAMESPACE" \
+            --from-literal=GITHUB_TOKEN=unused-in-dry-run
+          oc create secret generic pyxis-api-secret -n "$OCO_NAMESPACE" \
+            --from-literal=pyxis_api_key=unused-in-dry-run
+        fi
+
+        # A named claim (instead of volumeClaimTemplate) so that the results can
+        # be collected after the run.
+        oc apply -f - <<EOF
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: rhcert-workspace
+          namespace: ${OCO_NAMESPACE}
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+        EOF
+
+    - name: Serve the branch from a temporary git daemon
+      id: gitd
+      if: ${{ !inputs.submit }}
+      env:
+        BRANCH: ${{ steps.bundle.outputs.branch }}
+      run: |
+        set -euo pipefail
+        GIT_ROOT="${RUNNER_TEMP}/git"
+        SNAPSHOT="${RUNNER_TEMP}/snapshot"
+        mkdir -p "$GIT_ROOT" "$SNAPSHOT"
+        # A history-less snapshot of the sparse checkout (top-level files and
+        # operators/<package>), which is all the pipeline reads.
+        tar -C certified-operators --exclude=.git -cf - . | tar -C "$SNAPSHOT" -xf -
+        git init -q --bare "$GIT_ROOT/certified-operators.git"
+        git -C "$SNAPSHOT" init -q -b "$BRANCH"
+        git -C "$SNAPSHOT" add -A
+        git -C "$SNAPSHOT" -c user.name="github-actions[bot]" \
+          -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+          commit -q -m "Dry-run snapshot"
+        git -C "$SNAPSHOT" push -q "$GIT_ROOT/certified-operators.git" "$BRANCH"
+
+        git daemon --detach --reuseaddr --export-all --enable=receive-pack \
+          --listen=0.0.0.0 --port=9418 --base-path="$GIT_ROOT" \
+          --pid-file="${RUNNER_TEMP}/git-daemon.pid" "$GIT_ROOT"
+        URL="git://host.crc.testing/certified-operators.git"
+
+        # Check that pods can reach the daemon with the same git-init binary as
+        # the pipeline's git-clone task. This also pre-pulls its image.
+        oc run rhcert-git-check -n "$OCO_NAMESPACE" --image="$GIT_INIT_IMAGE" \
+          --restart=Never --env=HOME=/tmp --command -- \
+          /ko-app/git-init -url="$URL" -revision="$BRANCH" -path=/tmp/src
+        for _ in $(seq 1 60); do
+          PHASE=$(oc get pod rhcert-git-check -n "$OCO_NAMESPACE" -o jsonpath='{.status.phase}')
+          if [ "$PHASE" = "Succeeded" ] || [ "$PHASE" = "Failed" ]; then
+            break
+          fi
+          sleep 5
+        done
+        oc logs rhcert-git-check -n "$OCO_NAMESPACE" || true
+        oc delete pod rhcert-git-check -n "$OCO_NAMESPACE" --wait=false
+        if [ "$PHASE" != "Succeeded" ]; then
+          echo "::error::Pods cannot clone ${URL} (phase: ${PHASE:-unknown})"
+          exit 1
+        fi
+        echo "git-repo-url=${URL}" >> "$GITHUB_OUTPUT"
+        echo "git-root=${GIT_ROOT}" >> "$GITHUB_OUTPUT"
+
+    - name: Run operator-ci-pipeline
+      id: run
+      timeout-minutes: 150
+      env:
+        SUBMIT: ${{ inputs.submit }}
+        GIT_REPO_URL: ${{ steps.gitd.outputs.git-repo-url || format('git@github.com:{0}.git',
+          inputs.fork_repository) }}
+        BRANCH: ${{ steps.bundle.outputs.branch }}
+        BUNDLE_PATH: ${{ steps.bundle.outputs.bundle-path }}
+        UPSTREAM: ${{ inputs.upstream_repository }}
+      run: |
+        set -euo pipefail
+        PARAMS=$(jq -n \
+          --arg git_repo_url "$GIT_REPO_URL" \
+          --arg git_branch "$BRANCH" \
+          --arg bundle_path "$BUNDLE_PATH" \
+          --arg upstream_repo_name "$UPSTREAM" \
+          --arg submit "$SUBMIT" \
+          '$ARGS.named + {env: "prod", pin_digests: "true"}
+            | to_entries | map({name: .key, value: .value})')
+        WORKSPACES='[{"name": "pipeline", "persistentVolumeClaim": {"claimName": "rhcert-workspace"}}]'
+        if [ "$SUBMIT" = "true" ]; then
+          WORKSPACES=$(jq '. + [{"name": "ssh-dir", "secret": {"secretName": "github-ssh-credentials"}}]' <<<"$WORKSPACES")
+        fi
+        RUN=$(jq -n --arg ns "$OCO_NAMESPACE" --argjson params "$PARAMS" --argjson ws "$WORKSPACES" '{
+          apiVersion: "tekton.dev/v1",
+          kind: "PipelineRun",
+          metadata: {generateName: "operator-ci-pipeline-", namespace: $ns},
+          spec: {
+            pipelineRef: {name: "operator-ci-pipeline"},
+            params: $params,
+            workspaces: $ws,
+            taskRunTemplate: {serviceAccountName: "pipeline"},
+            timeouts: {pipeline: "2h"}
+          }
+        }' | oc create -f - -o jsonpath='{.metadata.name}')
+        echo "pipelinerun=${RUN}" >> "$GITHUB_OUTPUT"
+        echo "PipelineRun: ${RUN}"
+
+        tkn pipelinerun logs "$RUN" -n "$OCO_NAMESPACE" -f || true
+        for _ in $(seq 1 120); do
+          STATUS=$(oc get pipelinerun "$RUN" -n "$OCO_NAMESPACE" \
+            -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}')
+          if [ "$STATUS" = "True" ] || [ "$STATUS" = "False" ]; then
+            break
+          fi
+          sleep 30
+        done
+        oc get pipelinerun "$RUN" -n "$OCO_NAMESPACE"
+        if [ "$STATUS" != "True" ]; then
+          echo "::error::PipelineRun ${RUN} did not succeed"
+          exit 1
+        fi
+
+    - name: Collect results
+      if: always() && steps.run.outputs.pipelinerun != ''
+      env:
+        RUN: ${{ steps.run.outputs.pipelinerun }}
+        BRANCH: ${{ steps.bundle.outputs.branch }}
+        GIT_ROOT: ${{ steps.gitd.outputs.git-root }}
+      run: |
+        set -uo pipefail
+        mkdir -p "$ARTIFACTS_DIR"
+        tkn pipelinerun logs "$RUN" -n "$OCO_NAMESPACE" > "$ARTIFACTS_DIR/pipelinerun.log" 2>&1
+        oc get pipelinerun "$RUN" -n "$OCO_NAMESPACE" -o yaml > "$ARTIFACTS_DIR/pipelinerun.yaml"
+
+        # Copy the preflight output from the workspace claim.
+        oc run rhcert-collect -n "$OCO_NAMESPACE" --image=registry.access.redhat.com/ubi9/ubi \
+          --restart=Never --overrides='{
+            "spec": {
+              "serviceAccountName": "pipeline",
+              "volumes": [{"name": "ws", "persistentVolumeClaim": {"claimName": "rhcert-workspace"}}],
+              "containers": [{
+                "name": "rhcert-collect",
+                "image": "registry.access.redhat.com/ubi9/ubi",
+                "command": ["sleep", "600"],
+                "volumeMounts": [{"name": "ws", "mountPath": "/workspace"}]
+              }]
+            }
+          }'
+        if oc wait pod/rhcert-collect -n "$OCO_NAMESPACE" --for=condition=Ready --timeout=5m; then
+          oc cp "${OCO_NAMESPACE}/rhcert-collect:/workspace/preflight" "$ARTIFACTS_DIR/preflight" \
+            || echo "::warning::Could not copy the preflight results"
+        fi
+        oc delete pod rhcert-collect -n "$OCO_NAMESPACE" --wait=false
+
+        if [ -n "$GIT_ROOT" ] \
+          && git -C "$GIT_ROOT/certified-operators.git" rev-parse -q --verify "${BRANCH}-pinned" >/dev/null; then
+          git -C "$GIT_ROOT/certified-operators.git" diff "$BRANCH" "${BRANCH}-pinned" > "$ARTIFACTS_DIR/pinning.diff"
+        fi
+
+        {
+          echo "## Operator bundle certification (${RUN})"
+          echo ""
+          echo "| Task | Result |"
+          echo "|---|---|"
+          oc get taskruns -n "$OCO_NAMESPACE" -l "tekton.dev/pipelineRun=${RUN}" -o json \
+            | jq -r '.items | sort_by(.status.startTime)[]
+                | "| \(.metadata.labels["tekton.dev/pipelineTask"]) | \(.status.conditions[0].reason // "Unknown") |"'
+          oc get pipelinerun "$RUN" -n "$OCO_NAMESPACE" -o json \
+            | jq -r '.status.skippedTasks[]? | "| \(.name) | Skipped |"'
+          if [ -f "$ARTIFACTS_DIR/preflight/results.json" ]; then
+            echo ""
+            echo "### Preflight"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            jq -r '(.results.passed[]? | "| \(.name) | passed |"),
+              (.results.failed[]? | "| \(.name) | **failed** |"),
+              (.results.errors[]? | "| \(.name) | **error** |")' "$ARTIFACTS_DIR/preflight/results.json"
+          fi
+          if [ -f "$ARTIFACTS_DIR/pinning.diff" ]; then
+            echo ""
+            echo "Digest pinning changed the bundle; see pinning.diff in the artifact."
+          fi
+          PR_URL=$(oc get taskruns -n "$OCO_NAMESPACE" \
+            -l "tekton.dev/pipelineRun=${RUN},tekton.dev/pipelineTask=open-pull-request" \
+            -o jsonpath='{.items[0].status.results[?(@.name=="pr_url")].value}' 2>/dev/null)
+          if [ -n "$PR_URL" ]; then
+            echo ""
+            echo "Pull request: ${PR_URL}"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: rh-bundle-certification
+        path: rhcert-artifacts/
+        if-no-files-found: warn

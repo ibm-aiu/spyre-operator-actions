@@ -16,6 +16,7 @@ Reusable GitHub Actions workflows for spyre-operator CI/CD pipeline.
 | [sonarqube-scan.yaml](.github/workflows/sonarqube-scan.yaml) | Perform SonarQube code quality and coverage analysis | Code quality |
 | [auto-label-pr.yaml](.github/workflows/auto-label-pr.yaml) | Automatically label PRs based on title prefix | PR automation |
 | [rh-image-certification.yaml](.github/workflows/rh-image-certification.yaml) | Run Red Hat preflight container checks and optionally submit for image certification | Red Hat certification |
+| [rh-bundle-certification.yaml](.github/workflows/rh-bundle-certification.yaml) | Run the Red Hat operator bundle certification pipeline on CRC and optionally submit | Red Hat certification |
 
 ## Workflow Inputs Reference
 
@@ -28,6 +29,8 @@ Reusable GitHub Actions workflows for spyre-operator CI/CD pipeline.
 - [Create Release Workflow](#create-release-workflow)
 - [SonarQube Scan Workflow](#sonarqube-scan-workflow)
 - [Auto Label PR Workflow](#auto-label-pr-workflow)
+- [Red Hat Image Certification Workflow](#red-hat-image-certification-workflow)
+- [Red Hat Bundle Certification Workflow](#red-hat-bundle-certification-workflow)
 
 ---
 
@@ -487,6 +490,117 @@ jobs:
 
 - The image must be pushed to the registry configured for the certification component
 - Submission is only supported for public images
+
+### Red Hat Bundle Certification Workflow
+
+Runs [operator-ci-pipeline](https://github.com/redhat-openshift-ecosystem/operator-pipelines) on an OpenShift Local (CRC) cluster set up with the [Operator Certification Operator](https://github.com/redhat-openshift-ecosystem/operator-certification-operator).
+Runs are dry-runs unless `submit` is `true`, which is only allowed when the run was started manually (`workflow_dispatch`).
+
+```yaml
+# PR check, run only when the ok-to-rhcert-check label is set
+jobs:
+  rh-bundle-certification:
+    if: contains(github.event.pull_request.labels.*.name, 'ok-to-rhcert-check')
+    uses: ibm-aiu/spyre-operator-actions/.github/workflows/rh-bundle-certification.yaml@main
+    with:
+      repository: ${{ github.repository }}
+      ref: ${{ github.event.pull_request.head.sha }}
+      operator_image: ghcr.io/ibm-aiu/spyre-operator:1.5.0-dev  # Dry-run only (optional)
+    secrets:
+      crc-pull-secret: ${{ secrets.CRC_PULL_SECRET }}
+      operator-image-registry-username: ${{ github.actor }}          # For a private operator_image (optional)
+      operator-image-registry-password: ${{ secrets.GITHUB_TOKEN }}  # For a private operator_image (optional)
+```
+
+```yaml
+# Manual submission
+on:
+  workflow_dispatch:
+    inputs:
+      submit:
+        type: boolean
+        default: false
+
+jobs:
+  rh-bundle-certification:
+    uses: ibm-aiu/spyre-operator-actions/.github/workflows/rh-bundle-certification.yaml@main
+    with:
+      submit: ${{ inputs.submit }}
+    secrets:
+      crc-pull-secret: ${{ secrets.CRC_PULL_SECRET }}
+```
+
+**Inputs:**
+
+- `runner` (optional): GitHub runner to use
+  - Type: string
+  - Default: `'ubuntu-24.04'`
+- `repository` (optional): Repository containing the operator bundle
+  - Type: string
+  - Default: `'ibm-aiu/spyre-operator'`
+- `ref` (optional): Branch, tag or SHA of `repository`
+  - Type: string
+  - Default: `''` (default branch)
+- `bundle_dir` (optional): Bundle directory in `repository`
+  - Type: string
+  - Default: `'bundle'`
+- `operator_image` (optional, dry-run only): Operator image to use instead of the one in the CSV
+  - Type: string
+  - Example: `ghcr.io/ibm-aiu/spyre-operator:1.5.0-dev`
+  - The image is copied into the CRC internal registry and the CSV references the copy
+- `submit` (optional): Submit the results and open a pull request to `upstream_repository`
+  - Type: boolean
+  - Default: `false`
+  - Fails unless the run was started by `workflow_dispatch`
+- `fork_repository` (optional): Fork of certified-operators used on submit
+  - Type: string
+  - Default: `'ibm-aiu/certified-operators'`
+- `upstream_repository` (optional): Upstream certified-operators repository
+  - Type: string
+  - Default: `'redhat-openshift-ecosystem/certified-operators'`
+- `crc_version` (optional): CRC version
+  - Type: string
+  - Default: `'2.61.0'` (OpenShift 4.21)
+- `operator_pipelines_release` (optional): operator-pipelines release installed by the Operator Certification Operator
+  - Type: string
+  - Default: `'main'`
+
+**Secrets:**
+
+- `crc-pull-secret` (required): CRC pull secret (falls back to `CRC_PULL_SECRET`)
+- `operator-image-registry-username` / `operator-image-registry-password` (optional, dry-run only): Pull credentials for a private `operator_image`
+  - Used only on the runner to copy the image into CRC; never passed to the pipeline
+- `PYXIS_API_TOKEN`, `CERT_GITHUB_TOKEN`, `CERT_FORK_SSH_KEY` (required for submit): Set them as environment secrets on the `rh-certification` environment of the caller repository
+  - `PYXIS_API_TOKEN`: Partner Connect API key
+  - `CERT_GITHUB_TOKEN`: GitHub token that can sync `fork_repository` with upstream and open a pull request against `upstream_repository`
+  - `CERT_FORK_SSH_KEY`: SSH private key (e.g. a deploy key) with write access to `fork_repository`
+
+**What it does:**
+
+1. Copies `bundle_dir` to `operators/<package>/<version>` of certified-operators (package and version are read from the bundle), with the edits from the manual procedure:
+   - `docker.io/spyre-operator` is replaced with `quay.io/ibm-aiu` in the CSV
+   - `default: docker.io/spyre-operator/...` lines are removed from the other manifests
+   - `fast-` channels are renamed to `stable-` in `metadata/annotations.yaml`
+2. Starts CRC and installs OpenShift Pipelines (from `redhat-operators`), the Operator Certification Operator and an `OperatorPipeline` in the `oco` namespace
+3. Runs `operator-ci-pipeline` with `pin_digests=true`; bundle and index images are pushed to the CRC internal registry
+4. Writes the task and preflight results to the job summary and uploads the logs, preflight results, prepared bundle and (dry-run) pinning diff as the `rh-bundle-certification` artifact
+
+**Dry-run vs. submit:**
+
+- Dry-run: The branch is built from upstream `main` and served from a temporary git daemon on the runner; nothing is written to GitHub
+- Submit: Runs in the `rh-certification` environment (configure required reviewers there to add an approval gate). Syncs `fork_repository` with upstream, pushes `<package>-<version>` to the fork, and the pipeline pushes `<package>-<version>-pinned` when pinning is needed, uploads the results and opens the pull request. Fails when the version already exists upstream or the branch already exists in the fork
+
+> [!IMPORTANT]
+> A bundle version can be certified only once. Run a dry-run with the same bundle before submitting.
+
+**Permissions:**
+
+- `contents: read`: Required to check out `repository`
+
+**Requirements:**
+
+- `operators/<package>/ci.yaml` (with `cert_project_id`) must exist in `upstream_repository`
+- On submit, the operator image referenced by the CSV must already be published to `quay.io/ibm-aiu` and certified
 
 ## Advanced Usage
 
