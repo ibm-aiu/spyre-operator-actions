@@ -369,6 +369,17 @@ jobs:
         export GIT_SSH_COMMAND="ssh -i $SSH_DIR/id_rsa -o IdentitiesOnly=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts"
         git push "git@github.com:${FORK}.git" "HEAD:refs/heads/${BRANCH}"
 
+    # The dry-run serves the branch from a git daemon on the runner. With CRC's
+    # user-mode networking, host.crc.testing reaches the runner only when
+    # host-network-access is enabled, which must be set before `crc setup`.
+    # crc-github-action has no input for it, so pre-seed the crc config file;
+    # `crc config set` in the action keeps the existing keys.
+    - name: Allow CRC to reach the runner
+      if: ${{ !inputs.submit }}
+      run: |
+        mkdir -p ~/.crc
+        echo '{"host-network-access": true}' > ~/.crc/crc.json
+
     - name: Set up CRC
       uses: crc-org/crc-github-action@466b8741bd91b9ee59f37db92b69f285cacada41 # v1.0.1
       with:
@@ -571,11 +582,13 @@ jobs:
           --pid-file="${RUNNER_TEMP}/git-daemon.pid" "$GIT_ROOT"
         URL="git://host.crc.testing/certified-operators.git"
 
-        # Check that pods can reach the daemon with the same git-init binary as
-        # the pipeline's git-clone task. This also pre-pulls its image.
+        # Check that pods can reach the daemon, using git in the image of the
+        # pipeline's git-clone task. This also pre-pulls the image. git-init
+        # itself is not used because it fails outside a TaskRun (it writes to
+        # /tekton/termination).
         oc run rhcert-git-check -n "$OCO_NAMESPACE" --image="$GIT_INIT_IMAGE" \
           --restart=Never --env=HOME=/tmp --command -- \
-          /ko-app/git-init -url="$URL" -revision="$BRANCH" -path=/tmp/src
+          git ls-remote --exit-code "$URL" "refs/heads/${BRANCH}"
         for _ in $(seq 1 60); do
           PHASE=$(oc get pod rhcert-git-check -n "$OCO_NAMESPACE" -o jsonpath='{.status.phase}')
           if [ "$PHASE" = "Succeeded" ] || [ "$PHASE" = "Failed" ]; then
@@ -653,7 +666,9 @@ jobs:
         BRANCH: ${{ steps.bundle.outputs.branch }}
         GIT_ROOT: ${{ steps.gitd.outputs.git-root }}
       run: |
-        set -uo pipefail
+        # Best effort: collect as much as possible even if a command fails. The
+        # default shell is `bash -e`, so turn -e off explicitly.
+        set +e -uo pipefail
         mkdir -p "$ARTIFACTS_DIR"
         tkn pipelinerun logs "$RUN" -n "$OCO_NAMESPACE" > "$ARTIFACTS_DIR/pipelinerun.log" 2>&1
         oc get pipelinerun "$RUN" -n "$OCO_NAMESPACE" -o yaml > "$ARTIFACTS_DIR/pipelinerun.yaml"
@@ -709,7 +724,7 @@ jobs:
           fi
           PR_URL=$(oc get taskruns -n "$OCO_NAMESPACE" \
             -l "tekton.dev/pipelineRun=${RUN},tekton.dev/pipelineTask=open-pull-request" \
-            -o jsonpath='{.items[0].status.results[?(@.name=="pr_url")].value}' 2>/dev/null)
+            -o jsonpath='{.items[*].status.results[?(@.name=="pr_url")].value}' 2>/dev/null)
           if [ -n "$PR_URL" ]; then
             echo ""
             echo "Pull request: ${PR_URL}"
