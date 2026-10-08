@@ -581,6 +581,7 @@ jobs:
    - `docker.io/spyre-operator` is replaced with `quay.io/ibm-aiu` in the CSV
    - `default: docker.io/spyre-operator/...` lines are removed from the other manifests
    - `fast-` channels are renamed to `stable-` in `metadata/annotations.yaml`
+   - `<version>-dev` is replaced with `<version>` in the CSV (e.g. the operand versions in `alm-examples` and the `operator-version` label, which come from the development versions in `config/` of `repository`)
 2. Starts CRC and installs OpenShift Pipelines (from `redhat-operators`), the Operator Certification Operator and an `OperatorPipeline` in the `oco` namespace
 3. Runs `operator-ci-pipeline` with `pin_digests=true`; bundle and index images are pushed to the CRC internal registry
 4. Writes the task and preflight results to the job summary and uploads the logs, preflight results, prepared bundle and (dry-run) pinning diff as the `rh-bundle-certification` artifact
