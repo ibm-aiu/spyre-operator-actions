@@ -13,6 +13,8 @@
 #   - IMAGE_SOURCE_PREFIX is replaced with IMAGE_TARGET_PREFIX in the CSV
 #   - `default: IMAGE_SOURCE_PREFIX/...` lines are removed from other manifests
 #   - `fast-` channels are renamed to `stable-` in metadata/annotations.yaml
+#   - `<version>-dev` is replaced with `<version>` in the CSV (the development
+#     versions in config/ of the source repository)
 #
 # Dry-run (submit=false, the default; used for scheduled and PR runs):
 #   The prepared branch is served from a temporary git daemon on the runner, so
@@ -278,6 +280,7 @@ jobs:
         SUBMIT: ${{ inputs.submit }}
         BUNDLE_DIR: ${{ github.workspace }}/source/${{ inputs.bundle_dir }}
         PACKAGE: ${{ steps.bundle.outputs.package }}
+        VERSION: ${{ steps.bundle.outputs.version }}
         BRANCH: ${{ steps.bundle.outputs.branch }}
         BUNDLE_PATH: ${{ steps.bundle.outputs.bundle-path }}
         OPERATOR_IMAGE: ${{ inputs.operator_image }}
@@ -329,6 +332,14 @@ jobs:
           "$BUNDLE_PATH/metadata/annotations.yaml"
         if grep -rn -F "$IMAGE_SOURCE_PREFIX" "$BUNDLE_PATH"; then
           echo "::error::${IMAGE_SOURCE_PREFIX} is still referenced in the bundle"
+          exit 1
+        fi
+        # The development versions in config/ of the source repository (e.g. the
+        # operand versions in alm-examples and the operator-version label) are
+        # bundled as <version>-dev; the released bundle uses <version>.
+        perl -pi -e 's/\Q$ENV{VERSION}\E-dev\b/$ENV{VERSION}/g' "$CSV"
+        if grep -rn -F "${VERSION}-dev" "$BUNDLE_PATH"; then
+          echo "::error::${VERSION}-dev is still referenced in the bundle"
           exit 1
         fi
 
