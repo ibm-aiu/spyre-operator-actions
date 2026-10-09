@@ -573,10 +573,10 @@ jobs:
   - Used only on the runner to copy the image into CRC; never passed to the pipeline
 - `PYXIS_API_TOKEN`, `CERT_GITHUB_TOKEN`, `CERT_FORK_SSH_KEY`: Set them as environment secrets of the caller repository. Not used by `dry-run`
   - `rh-certification` environment (`submit`): all three
-  - `rh-certification-fork` environment (`dry-run-fork`): `CERT_GITHUB_TOKEN` and `CERT_FORK_SSH_KEY` only. Do not set `PYXIS_API_TOKEN` here
+  - `rh-certification-fork` environment (`dry-run-fork`): `CERT_GITHUB_TOKEN` only. Do not set `PYXIS_API_TOKEN` or `CERT_FORK_SSH_KEY` here
   - `PYXIS_API_TOKEN`: Partner Connect API key
-  - `CERT_GITHUB_TOKEN`: GitHub token that can sync `fork_repository` with upstream and open a pull request against `upstream_repository`
-  - `CERT_FORK_SSH_KEY`: Private key of a deploy key dedicated to this workflow, with write access to `fork_repository` only. Do not use a personal SSH key (see **Deploy key for the fork** below)
+  - `CERT_GITHUB_TOKEN`: GitHub token that can sync `fork_repository` with upstream and push to it (`dry-run-fork`), and open a pull request against `upstream_repository` (`submit`). For `dry-run-fork`, a fine-grained token limited to `fork_repository` with **Contents** and **Workflows** read and write is enough (Workflows is needed when the sync brings in changes under `.github/workflows/`)
+  - `CERT_FORK_SSH_KEY` (`submit` only): Private key of a deploy key dedicated to this workflow, with write access to `fork_repository` only. Do not use a personal SSH key (see **Deploy key for the fork** below)
 
 **What it does:**
 
@@ -598,7 +598,7 @@ jobs:
 | `submit` | `workflow_dispatch` only | `rh-certification` | `<package>-<version>` and `<package>-<version>-pinned` on `fork_repository` | yes |
 
 - `dry-run`: The branch is built from upstream `main` and served from a temporary git daemon on the runner; the pipeline pushes the pinned branch to that daemon
-- `dry-run-fork`: Syncs `fork_repository` with upstream and force-pushes `<package>-<version>-dry-run` to the fork, overwriting the previous dry-run and deleting its `-pinned` branch. The pipeline pushes `<package>-<version>-dry-run-pinned` when pinning is needed, so the pinned bundle can be reviewed on GitHub. The job summary links both branches. Use it to check the bundle exactly as it would be pushed on submit
+- `dry-run-fork`: Syncs `fork_repository` with upstream and force-pushes `<package>-<version>-dry-run` to the fork, overwriting the previous dry-run and deleting its `-pinned` branch. The pipeline runs against the temporary git daemon as in `dry-run`; when it pins the digests, the same change is committed on top of the branch and pushed as `<package>-<version>-dry-run-pinned`, so the pinned bundle can be reviewed on GitHub. All pushes use `CERT_GITHUB_TOKEN` over HTTPS (no SSH key). The job summary links both branches. Use it to check the bundle exactly as it would be pushed on submit
 - `submit`: Runs in the `rh-certification` environment (configure required reviewers there to add an approval gate). Syncs `fork_repository` with upstream, pushes `<package>-<version>` to the fork, and the pipeline pushes `<package>-<version>-pinned` when pinning is needed, uploads the results and opens the pull request. Fails when the version already exists upstream or the branch already exists in the fork
 - `operator_image` and the operator image registry credentials are refused by `dry-run-fork` and `submit`, because the bundle pushed to the fork must reference the released images
 
@@ -607,7 +607,7 @@ jobs:
 
 **Deploy key for the fork:**
 
-With `dry-run-fork` and `submit`, the `commit-pinned-digest` task of the pipeline pushes the `-pinned` branch to the fork. This task accepts only an SSH key (`ssh-dir` workspace), which is the method documented for `pin_digests=true` in the [CI pipeline guide](https://github.com/redhat-openshift-ecosystem/certification-releases/blob/main/4.9/ga/ci-pipeline.md#digest-pinning-config). A personal access token cannot be used there: putting it in `git_repo_url` would expose it in the pipeline logs, which are uploaded to Red Hat on submit.
+With `submit`, the `commit-pinned-digest` task of the pipeline pushes the `-pinned` branch to the fork. This task accepts only an SSH key (`ssh-dir` workspace), which is the method documented for `pin_digests=true` in the [CI pipeline guide](https://github.com/redhat-openshift-ecosystem/certification-releases/blob/main/4.9/ga/ci-pipeline.md#digest-pinning-config). A personal access token cannot be used there: putting it in `git_repo_url` would expose it in the pipeline logs, which are uploaded to Red Hat on submit.
 
 Create a key pair only for this workflow and register it as a deploy key of `fork_repository`, so that it can write to the fork only:
 
@@ -618,10 +618,10 @@ Create a key pair only for this workflow and register it as a deploy key of `for
    ```
 
 2. Add `rh-bundle-certification.pub` to **Settings > Deploy keys** of `fork_repository` with **Allow write access**
-3. Set the content of `rh-bundle-certification` (the private key) as the `CERT_FORK_SSH_KEY` environment secret on `rh-certification` and `rh-certification-fork`, then delete the local files
+3. Set the content of `rh-bundle-certification` (the private key) as the `CERT_FORK_SSH_KEY` environment secret on `rh-certification`, then delete the local files
 4. To revoke it, delete the deploy key from the fork
 
-The key is used only by `dry-run-fork` and `submit`, which can be started only manually; `dry-run` (PR and scheduled runs) never receives it. The workflow uses it to push the branch from the runner and stores it in the `github-ssh-credentials` Secret of the CRC cluster, which is deleted with the cluster.
+The key is used only by `submit`, which can be started only manually; `dry-run` and `dry-run-fork` never receive it. Deploy keys must be enabled for the organization (**Settings > Member privileges > Deploy keys**). The workflow uses it to push the branch from the runner and stores it in the `github-ssh-credentials` Secret of the CRC cluster, which is deleted with the cluster.
 
 **Permissions:**
 

@@ -29,10 +29,12 @@
 #
 # dry-run-fork:
 #   Only allowed when the run was started manually (workflow_dispatch). The job
-#   runs in the `rh-certification-fork` environment. The fork is synchronized
-#   with upstream, the branch <package>-<version>-dry-run is force-pushed to the
-#   fork, and the pipeline pushes <branch>-pinned there. Results are not
-#   submitted and no pull request is opened. `operator_image` and registry
+#   runs in the `rh-certification-fork` environment and uses CERT_GITHUB_TOKEN
+#   only (no SSH key). The fork is synchronized with upstream and the branch
+#   <package>-<version>-dry-run is force-pushed to the fork. The pipeline runs
+#   against the git daemon as in dry-run; its digest pinning is then committed
+#   on top of the branch and pushed to the fork as <branch>-pinned. Results are
+#   not submitted and no pull request is opened. `operator_image` and registry
 #   credentials are refused.
 #
 # submit:
@@ -45,10 +47,10 @@
 #
 # Secrets (environment secrets, not used by dry-run):
 #   PYXIS_API_TOKEN       Partner Connect API key (rh-certification only)
-#   CERT_GITHUB_TOKEN     GitHub token that can sync the fork and open a pull
-#                         request against the upstream repository
+#   CERT_GITHUB_TOKEN     GitHub token that can sync and push to the fork and
+#                         open a pull request against the upstream repository
 #   CERT_FORK_SSH_KEY     Private key of a deploy key with write access to the
-#                         fork
+#                         fork (rh-certification only)
 
 name: Red Hat Bundle Certification
 
@@ -257,7 +259,7 @@ jobs:
           NAMES=(PYXIS_API_TOKEN CERT_GITHUB_TOKEN CERT_FORK_SSH_KEY)
           ENVIRONMENT=rh-certification
         else
-          NAMES=(CERT_GITHUB_TOKEN CERT_FORK_SSH_KEY)
+          NAMES=(CERT_GITHUB_TOKEN)
           ENVIRONMENT=rh-certification-fork
         fi
         RC=0
@@ -404,10 +406,9 @@ jobs:
         git show --stat HEAD
 
     - name: Push branch to the fork
-      if: inputs.mode != 'dry-run'
+      if: inputs.mode == 'submit'
       working-directory: certified-operators
       env:
-        MODE: ${{ inputs.mode }}
         FORK: ${{ inputs.fork_repository }}
         BRANCH: ${{ steps.bundle.outputs.branch }}
         CERT_FORK_SSH_KEY: ${{ secrets.CERT_FORK_SSH_KEY }}
@@ -420,25 +421,38 @@ jobs:
         # Host keys from the GitHub API (authenticated by TLS) instead of ssh-keyscan.
         curl -fsSL --proto =https --proto-redir =https https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$SSH_DIR/known_hosts"
         export GIT_SSH_COMMAND="ssh -i $SSH_DIR/id_rsa -o IdentitiesOnly=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts"
-        REMOTE="git@github.com:${FORK}.git"
-        if [ "$MODE" = "dry-run-fork" ]; then
-          # Overwrite the previous dry-run, and delete its pinned branch so that
-          # a stale one is not mistaken for the result of this run.
-          git push --force "$REMOTE" "HEAD:refs/heads/${BRANCH}"
-          if [ -n "$(git ls-remote --heads "$REMOTE" "${BRANCH}-pinned")" ]; then
-            git push "$REMOTE" --delete "${BRANCH}-pinned"
-          fi
-        else
-          git push "$REMOTE" "HEAD:refs/heads/${BRANCH}"
+        git push "git@github.com:${FORK}.git" "HEAD:refs/heads/${BRANCH}"
+
+    - name: Push dry-run branch to the fork
+      if: inputs.mode == 'dry-run-fork'
+      working-directory: certified-operators
+      env:
+        FORK: ${{ inputs.fork_repository }}
+        BRANCH: ${{ steps.bundle.outputs.branch }}
+        GH_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        # Pass the token in a header (not in the URL) so that it never appears
+        # in the remote URL or in git output. The encoded value is masked too.
+        AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+        echo "::add-mask::${AUTH}"
+        push() {
+          git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" push "https://github.com/${FORK}.git" "$@"
+        }
+        # Overwrite the previous dry-run, and delete its pinned branch so that
+        # a stale one is not mistaken for the result of this run.
+        push --force "HEAD:refs/heads/${BRANCH}"
+        if [ -n "$(git ls-remote --heads "https://github.com/${FORK}.git" "${BRANCH}-pinned")" ]; then
+          push --delete "${BRANCH}-pinned"
         fi
 
-    # The dry-run serves the branch from a git daemon on the runner. With CRC's
-    # user-mode networking, host.crc.testing reaches the runner only when
-    # host-network-access is enabled, which must be set before `crc setup`.
+    # dry-run and dry-run-fork serve the branch from a git daemon on the runner.
+    # With CRC's user-mode networking, host.crc.testing reaches the runner only
+    # when host-network-access is enabled, which must be set before `crc setup`.
     # crc-github-action has no input for it, so pre-seed the crc config file;
     # `crc config set` in the action keeps the existing keys.
     - name: Allow CRC to reach the runner
-      if: inputs.mode == 'dry-run'
+      if: inputs.mode != 'submit'
       run: |
         mkdir -p ~/.crc
         echo '{"host-network-access": true}' > ~/.crc/crc.json
@@ -599,7 +613,7 @@ jobs:
           oc create secret generic pyxis-api-secret -n "$OCO_NAMESPACE" \
             --from-literal=pyxis_api_key=unused-in-dry-run
         fi
-        if [ "$MODE" != "dry-run" ]; then
+        if [ "$MODE" = "submit" ]; then
           SSH_DIR="${RUNNER_TEMP}/ssh"
           oc create secret generic github-ssh-credentials -n "$OCO_NAMESPACE" \
             --from-file=id_rsa="$SSH_DIR/id_rsa" --from-file=known_hosts="$SSH_DIR/known_hosts"
@@ -623,7 +637,7 @@ jobs:
 
     - name: Serve the branch from a temporary git daemon
       id: gitd
-      if: inputs.mode == 'dry-run'
+      if: inputs.mode != 'submit'
       env:
         BRANCH: ${{ steps.bundle.outputs.branch }}
       run: |
@@ -692,7 +706,7 @@ jobs:
           '$ARGS.named + {env: "prod", pin_digests: "true"}
             | to_entries | map({name: .key, value: .value})')
         WORKSPACES='[{"name": "pipeline", "persistentVolumeClaim": {"claimName": "rhcert-workspace"}}]'
-        if [ "$MODE" != "dry-run" ]; then
+        if [ "$MODE" = "submit" ]; then
           WORKSPACES=$(jq '. + [{"name": "ssh-dir", "secret": {"secretName": "github-ssh-credentials"}}]' <<<"$WORKSPACES")
         fi
         RUN=$(jq -n --arg ns "$OCO_NAMESPACE" --argjson params "$PARAMS" --argjson ws "$WORKSPACES" '{
@@ -725,6 +739,39 @@ jobs:
           exit 1
         fi
 
+    # The pipeline pushed the pinned branch to the git daemon, on top of a
+    # history-less snapshot. Commit the same change on top of the branch pushed
+    # to the fork and push it as <branch>-pinned.
+    - name: Push pinned branch to the fork
+      id: pinned
+      if: always() && inputs.mode == 'dry-run-fork' && steps.run.outputs.pipelinerun != ''
+      working-directory: certified-operators
+      env:
+        FORK: ${{ inputs.fork_repository }}
+        BRANCH: ${{ steps.bundle.outputs.branch }}
+        GIT_ROOT: ${{ steps.gitd.outputs.git-root }}
+        GH_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        BARE="${GIT_ROOT}/certified-operators.git"
+        if ! git -C "$BARE" rev-parse -q --verify "${BRANCH}-pinned" >/dev/null; then
+          echo "The pipeline did not push ${BRANCH}-pinned (no pinning was needed, or it failed before pinning)."
+          exit 0
+        fi
+        git -C "$BARE" diff --binary "$BRANCH" "${BRANCH}-pinned" > "${RUNNER_TEMP}/pinning.patch"
+        git apply --index "${RUNNER_TEMP}/pinning.patch"
+        # Keep the author and message of the pipeline's commit-pinned-digest task.
+        git -C "$BARE" log -1 --format='%an%n%ae%n%B' "${BRANCH}-pinned" > "${RUNNER_TEMP}/pinned-commit"
+        NAME=$(sed -n 1p "${RUNNER_TEMP}/pinned-commit")
+        EMAIL=$(sed -n 2p "${RUNNER_TEMP}/pinned-commit")
+        sed 1,2d "${RUNNER_TEMP}/pinned-commit" > "${RUNNER_TEMP}/pinned-message"
+        git -c user.name="$NAME" -c user.email="$EMAIL" commit -q -F "${RUNNER_TEMP}/pinned-message"
+        AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+        echo "::add-mask::${AUTH}"
+        git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" \
+          push --force "https://github.com/${FORK}.git" "HEAD:refs/heads/${BRANCH}-pinned"
+        echo "pushed=true" >> "$GITHUB_OUTPUT"
+
     - name: Collect results
       if: always() && steps.run.outputs.pipelinerun != ''
       env:
@@ -732,6 +779,8 @@ jobs:
         BRANCH: ${{ steps.bundle.outputs.branch }}
         GIT_ROOT: ${{ steps.gitd.outputs.git-root }}
         FORK: ${{ inputs.fork_repository }}
+        MODE: ${{ inputs.mode }}
+        PINNED_PUSHED_DRY_RUN_FORK: ${{ steps.pinned.outputs.pushed }}
       run: |
         # Best effort: collect as much as possible even if a command fails. The
         # default shell is `bash -e`, so turn -e off explicitly.
@@ -760,13 +809,14 @@ jobs:
         fi
         oc delete pod rhcert-collect -n "$OCO_NAMESPACE" --wait=false
 
-        PINNED_PUSHED=false
+        PINNED_PUSHED=${PINNED_PUSHED_DRY_RUN_FORK:-false}
         if [ -n "$GIT_ROOT" ]; then
           if git -C "$GIT_ROOT/certified-operators.git" rev-parse -q --verify "${BRANCH}-pinned" >/dev/null; then
             git -C "$GIT_ROOT/certified-operators.git" diff "$BRANCH" "${BRANCH}-pinned" > "$ARTIFACTS_DIR/pinning.diff"
           fi
         elif git -C certified-operators fetch -q --depth 1 origin "refs/heads/${BRANCH}-pinned" 2>/dev/null; then
-          # The fork (origin of the checkout) has the pinned branch.
+          # submit: the pipeline pushed the pinned branch to the fork (origin of
+          # the checkout).
           PINNED_PUSHED=true
           git -C certified-operators diff HEAD FETCH_HEAD > "$ARTIFACTS_DIR/pinning.diff"
         fi
@@ -795,7 +845,7 @@ jobs:
             echo ""
             echo "Digest pinning changed the bundle; see pinning.diff in the artifact."
           fi
-          if [ -z "$GIT_ROOT" ]; then
+          if [ "$MODE" != "dry-run" ]; then
             echo ""
             echo "Branch: https://github.com/${FORK}/tree/${BRANCH}"
             if [ "$PINNED_PUSHED" = "true" ]; then
