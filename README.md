@@ -494,7 +494,7 @@ jobs:
 ### Red Hat Bundle Certification Workflow
 
 Runs [operator-ci-pipeline](https://github.com/redhat-openshift-ecosystem/operator-pipelines) on an OpenShift Local (CRC) cluster set up with the [Operator Certification Operator](https://github.com/redhat-openshift-ecosystem/operator-certification-operator).
-Runs are dry-runs unless `submit` is `true`, which is only allowed when the run was started manually (`workflow_dispatch`).
+`mode` selects what is written: `dry-run` (the default) writes nothing, `dry-run-fork` pushes the prepared and digest-pinned bundle to the fork, and `submit` also submits the results and opens a pull request. `dry-run-fork` and `submit` are only allowed when the run was started manually (`workflow_dispatch`).
 
 ```yaml
 # PR check, run only when the ok-to-rhcert-check label is set
@@ -505,7 +505,7 @@ jobs:
     with:
       repository: ${{ github.repository }}
       ref: ${{ github.event.pull_request.head.sha }}
-      operator_image: ghcr.io/ibm-aiu/spyre-operator:1.5.0-dev  # Dry-run only (optional)
+      operator_image: ghcr.io/ibm-aiu/spyre-operator:1.5.0-dev  # dry-run mode only (optional)
     secrets:
       crc-pull-secret: ${{ secrets.CRC_PULL_SECRET }}
       operator-image-registry-username: ${{ github.actor }}          # For a private operator_image (optional)
@@ -513,19 +513,20 @@ jobs:
 ```
 
 ```yaml
-# Manual submission
+# Manual run (dry-run-fork or submit)
 on:
   workflow_dispatch:
     inputs:
-      submit:
-        type: boolean
-        default: false
+      mode:
+        type: choice
+        options: [dry-run, dry-run-fork, submit]
+        default: dry-run
 
 jobs:
   rh-bundle-certification:
     uses: ibm-aiu/spyre-operator-actions/.github/workflows/rh-bundle-certification.yaml@main
     with:
-      submit: ${{ inputs.submit }}
+      mode: ${{ inputs.mode }}
     secrets:
       crc-pull-secret: ${{ secrets.CRC_PULL_SECRET }}
 ```
@@ -544,15 +545,15 @@ jobs:
 - `bundle_dir` (optional): Bundle directory in `repository`
   - Type: string
   - Default: `'bundle'`
-- `operator_image` (optional, dry-run only): Operator image to use instead of the one in the CSV
+- `operator_image` (optional, `dry-run` mode only): Operator image to use instead of the one in the CSV
   - Type: string
   - Example: `ghcr.io/ibm-aiu/spyre-operator:1.5.0-dev`
   - The image is copied into the CRC internal registry and the CSV references the copy
-- `submit` (optional): Submit the results and open a pull request to `upstream_repository`
-  - Type: boolean
-  - Default: `false`
-  - Fails unless the run was started by `workflow_dispatch`
-- `fork_repository` (optional): Fork of certified-operators used on submit
+- `mode` (optional): What the run writes; see **Modes** below
+  - Type: string (`dry-run`, `dry-run-fork` or `submit`; a choice on `workflow_dispatch`)
+  - Default: `'dry-run'`
+  - `dry-run-fork` and `submit` fail unless the run was started by `workflow_dispatch`
+- `fork_repository` (optional): Fork of certified-operators used by `dry-run-fork` and `submit`
   - Type: string
   - Default: `'ibm-aiu/certified-operators'`
 - `upstream_repository` (optional): Upstream certified-operators repository
@@ -568,9 +569,11 @@ jobs:
 **Secrets:**
 
 - `crc-pull-secret` (required): CRC pull secret (falls back to `CRC_PULL_SECRET`)
-- `operator-image-registry-username` / `operator-image-registry-password` (optional, dry-run only): Pull credentials for a private `operator_image`
+- `operator-image-registry-username` / `operator-image-registry-password` (optional, `dry-run` mode only): Pull credentials for a private `operator_image`
   - Used only on the runner to copy the image into CRC; never passed to the pipeline
-- `PYXIS_API_TOKEN`, `CERT_GITHUB_TOKEN`, `CERT_FORK_SSH_KEY` (required for submit): Set them as environment secrets on the `rh-certification` environment of the caller repository
+- `PYXIS_API_TOKEN`, `CERT_GITHUB_TOKEN`, `CERT_FORK_SSH_KEY`: Set them as environment secrets of the caller repository. Not used by `dry-run`
+  - `rh-certification` environment (`submit`): all three
+  - `rh-certification-fork` environment (`dry-run-fork`): `CERT_GITHUB_TOKEN` and `CERT_FORK_SSH_KEY` only. Do not set `PYXIS_API_TOKEN` here
   - `PYXIS_API_TOKEN`: Partner Connect API key
   - `CERT_GITHUB_TOKEN`: GitHub token that can sync `fork_repository` with upstream and open a pull request against `upstream_repository`
   - `CERT_FORK_SSH_KEY`: Private key of a deploy key dedicated to this workflow, with write access to `fork_repository` only. Do not use a personal SSH key (see **Deploy key for the fork** below)
@@ -584,19 +587,27 @@ jobs:
    - `<version>-dev` is replaced with `<version>` in the CSV (e.g. the operand versions in `alm-examples` and the `operator-version` label, which come from the development versions in `config/` of `repository`)
 2. Starts CRC and installs OpenShift Pipelines (from `redhat-operators`), the Operator Certification Operator and an `OperatorPipeline` in the `oco` namespace
 3. Runs `operator-ci-pipeline` with `pin_digests=true`; bundle and index images are pushed to the CRC internal registry
-4. Writes the task and preflight results to the job summary and uploads the logs, preflight results, prepared bundle and (dry-run) pinning diff as the `rh-bundle-certification` artifact
+4. Writes the task and preflight results to the job summary and uploads the logs, preflight results, prepared bundle and pinning diff as the `rh-bundle-certification` artifact
 
-**Dry-run vs. submit:**
+**Modes:**
 
-- Dry-run: The branch is built from upstream `main` and served from a temporary git daemon on the runner; nothing is written to GitHub
-- Submit: Runs in the `rh-certification` environment (configure required reviewers there to add an approval gate). Syncs `fork_repository` with upstream, pushes `<package>-<version>` to the fork, and the pipeline pushes `<package>-<version>-pinned` when pinning is needed, uploads the results and opens the pull request. Fails when the version already exists upstream or the branch already exists in the fork
+| Mode | Allowed trigger | Environment | Writes to GitHub | Submits results / opens PR |
+| --- | --- | --- | --- | --- |
+| `dry-run` (default) | any (PR, schedule, manual) | none | nothing | no |
+| `dry-run-fork` | `workflow_dispatch` only | `rh-certification-fork` | `<package>-<version>-dry-run` and `<package>-<version>-dry-run-pinned` on `fork_repository` | no |
+| `submit` | `workflow_dispatch` only | `rh-certification` | `<package>-<version>` and `<package>-<version>-pinned` on `fork_repository` | yes |
+
+- `dry-run`: The branch is built from upstream `main` and served from a temporary git daemon on the runner; the pipeline pushes the pinned branch to that daemon
+- `dry-run-fork`: Syncs `fork_repository` with upstream and force-pushes `<package>-<version>-dry-run` to the fork, overwriting the previous dry-run and deleting its `-pinned` branch. The pipeline pushes `<package>-<version>-dry-run-pinned` when pinning is needed, so the pinned bundle can be reviewed on GitHub. The job summary links both branches. Use it to check the bundle exactly as it would be pushed on submit
+- `submit`: Runs in the `rh-certification` environment (configure required reviewers there to add an approval gate). Syncs `fork_repository` with upstream, pushes `<package>-<version>` to the fork, and the pipeline pushes `<package>-<version>-pinned` when pinning is needed, uploads the results and opens the pull request. Fails when the version already exists upstream or the branch already exists in the fork
+- `operator_image` and the operator image registry credentials are refused by `dry-run-fork` and `submit`, because the bundle pushed to the fork must reference the released images
 
 > [!IMPORTANT]
-> A bundle version can be certified only once. Run a dry-run with the same bundle before submitting.
+> A bundle version can be certified only once. Run `dry-run` (and `dry-run-fork`) with the same bundle before submitting.
 
 **Deploy key for the fork:**
 
-On submit, the `commit-pinned-digest` task of the pipeline pushes `<package>-<version>-pinned` to the fork. This task accepts only an SSH key (`ssh-dir` workspace), which is the method documented for `pin_digests=true` in the [CI pipeline guide](https://github.com/redhat-openshift-ecosystem/certification-releases/blob/main/4.9/ga/ci-pipeline.md#digest-pinning-config). A personal access token cannot be used there: putting it in `git_repo_url` would expose it in the pipeline logs, which are uploaded to Red Hat on submit.
+With `dry-run-fork` and `submit`, the `commit-pinned-digest` task of the pipeline pushes the `-pinned` branch to the fork. This task accepts only an SSH key (`ssh-dir` workspace), which is the method documented for `pin_digests=true` in the [CI pipeline guide](https://github.com/redhat-openshift-ecosystem/certification-releases/blob/main/4.9/ga/ci-pipeline.md#digest-pinning-config). A personal access token cannot be used there: putting it in `git_repo_url` would expose it in the pipeline logs, which are uploaded to Red Hat on submit.
 
 Create a key pair only for this workflow and register it as a deploy key of `fork_repository`, so that it can write to the fork only:
 
@@ -607,10 +618,10 @@ Create a key pair only for this workflow and register it as a deploy key of `for
    ```
 
 2. Add `rh-bundle-certification.pub` to **Settings > Deploy keys** of `fork_repository` with **Allow write access**
-3. Set the content of `rh-bundle-certification` (the private key) as the `CERT_FORK_SSH_KEY` environment secret on `rh-certification`, then delete the local files
+3. Set the content of `rh-bundle-certification` (the private key) as the `CERT_FORK_SSH_KEY` environment secret on `rh-certification` and `rh-certification-fork`, then delete the local files
 4. To revoke it, delete the deploy key from the fork
 
-The key is used only on submit, after the `rh-certification` approval; dry-runs never receive it. The workflow uses it to push `<package>-<version>` from the runner and stores it in the `github-ssh-credentials` Secret of the CRC cluster, which is deleted with the cluster.
+The key is used only by `dry-run-fork` and `submit`, which can be started only manually; `dry-run` (PR and scheduled runs) never receives it. The workflow uses it to push the branch from the runner and stores it in the `github-ssh-credentials` Secret of the CRC cluster, which is deleted with the cluster.
 
 **Permissions:**
 
@@ -619,7 +630,7 @@ The key is used only on submit, after the `rh-certification` approval; dry-runs 
 **Requirements:**
 
 - `operators/<package>/ci.yaml` (with `cert_project_id`) must exist in `upstream_repository`
-- On submit, the operator image referenced by the CSV must already be published to `quay.io/ibm-aiu` and certified
+- With `dry-run-fork` and `submit`, the operator image referenced by the CSV must already be published to `quay.io/ibm-aiu` (and certified, for `submit`)
 
 ## Advanced Usage
 
