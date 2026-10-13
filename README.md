@@ -17,6 +17,7 @@ Reusable GitHub Actions workflows for spyre-operator CI/CD pipeline.
 | [auto-label-pr.yaml](.github/workflows/auto-label-pr.yaml) | Automatically label PRs based on title prefix | PR automation |
 | [rh-image-certification.yaml](.github/workflows/rh-image-certification.yaml) | Run Red Hat preflight container checks and optionally submit for image certification | Red Hat certification |
 | [rh-bundle-certification.yaml](.github/workflows/rh-bundle-certification.yaml) | Run the Red Hat operator bundle certification pipeline on CRC and optionally submit | Red Hat certification |
+| [sync-prs.yml](.github/workflows/sync-prs.yml) | Scan all ibm-aiu repos daily and add their open PRs to the org Project | Project board automation |
 
 ## Workflow Inputs Reference
 
@@ -31,6 +32,7 @@ Reusable GitHub Actions workflows for spyre-operator CI/CD pipeline.
 - [Auto Label PR Workflow](#auto-label-pr-workflow)
 - [Red Hat Image Certification Workflow](#red-hat-image-certification-workflow)
 - [Red Hat Bundle Certification Workflow](#red-hat-bundle-certification-workflow)
+- [Sync PRs to Project Workflow](#sync-prs-to-project-workflow)
 
 ---
 
@@ -620,6 +622,39 @@ The key is used only on submit, after the `rh-certification` approval; dry-runs 
 - `operators/<package>/ci.yaml` (with `cert_project_id`) must exist in `upstream_repository`
 - On submit, the operator image referenced by the CSV must already be published to `quay.io/ibm-aiu` and certified
 
+### Sync PRs to Project Workflow
+
+Scans every repository in the `ibm-aiu` organization and adds their open pull requests to [ibm-aiu/projects/2](https://github.com/orgs/ibm-aiu/projects/2).
+Adding a PR that is already in the Project is idempotent — it will not create a duplicate.
+
+**Triggers:**
+
+- `schedule`: Runs daily at **23:59 JST** (14:59 UTC)
+- `workflow_dispatch`: Can be triggered manually; optionally accepts a custom repository list
+
+**Inputs:**
+
+- `repositories` (optional): Space- or comma-separated list of `owner/name` repository references to scan
+  - Type: string
+  - Default: all repositories in the `ibm-aiu` organization (auto-discovered via the REST API)
+
+**Required Secret:**
+
+- `PROJECT_SYNC_TOKEN`: Fine-grained PAT with the following permissions (resource owner: `ibm-aiu`, access: all repositories):
+  - Repository permission — **Metadata**: Read
+  - Repository permission — **Pull requests**: Read
+  - Organization permission — **Projects**: Read and write
+
+**How it works:**
+
+1. If no manual `repositories` input is given, queries `GET /orgs/ibm-aiu/repos` (paginated) to discover all org repos.
+2. Resolves the GraphQL node ID of the target Project with `organization.projectV2(number: 2)`.
+3. For each repository, queries `GET /repos/{owner}/{repo}/pulls?state=open` (paginated) to list open PRs.
+4. Calls the `addProjectV2ItemById` GraphQL mutation for each PR; already-present items are returned unchanged.
+5. Writes a per-repository summary table to the job summary page; fails the job if any repo or PR could not be processed.
+
+---
+
 ## Advanced Usage
 
 ### Sequential Job Execution
@@ -667,6 +702,7 @@ uses: ibm-aiu/spyre-operator-actions/.github/workflows/pre-commit.yaml@v1.5.0
 | **Version Patch** | `VERSION` file containing semantic version (e.g., `1.0.0`) |
 | **Create Release** | `VERSION` file, `contents: write` permission |
 | **SonarQube Scan** | SonarQube organization secrets, `make test` producing `coverage.out` |
+| **Sync PRs to Project** | `PROJECT_SYNC_TOKEN` secret with org Projects write permission |
 
 ## License
 
