@@ -1,0 +1,144 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: Sync Open PRs to Project
+
+# Scans all repositories in the ibm-aiu organization and adds their open PRs
+# to the organization Project https://github.com/orgs/ibm-aiu/projects/2
+# - REST API (gh api orgs/.../repos) discovers all repos automatically
+# - REST API (gh api repos/.../pulls) lists the open PRs
+# - GraphQL API (addProjectV2ItemById) adds each PR to the Project
+#   (idempotent: PRs already in the Project are left as-is)
+
+on:
+  schedule:
+    # Daily at 23:59 JST (UTC+9) = 14:59 UTC. GitHub cron schedules are evaluated in UTC.
+    - cron: "59 14 * * *"
+  workflow_dispatch:
+    inputs:
+      repositories:
+        description: "Space or comma separated list of repositories (owner/name). Leave empty to scan all ibm-aiu repos."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_ORG: ibm-aiu
+  PROJECT_NUMBER: "2"
+
+jobs:
+  sync-prs:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Add open PRs to Project
+      env:
+        # GITHUB_TOKEN cannot access organization Projects (v2) nor PRs in
+        # other repositories. Store a fine-grained PAT as PROJECT_SYNC_TOKEN
+        # (resource owner: ibm-aiu, access: all repositories) with:
+        #   - Repository permission:   Metadata: Read
+        #   - Repository permission:   Pull requests: Read
+        #   - Organization permission: Projects: Read and write
+        # (classic PAT alternative: "repo" and "project" scopes)
+        GH_TOKEN: ${{ secrets.PROJECT_SYNC_TOKEN }}
+        INPUT_REPOSITORIES: ${{ inputs.repositories }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${GH_TOKEN:-}" ]; then
+          echo "::error::Secret PROJECT_SYNC_TOKEN is not set"
+          exit 1
+        fi
+
+        # Manual input overrides the auto-discovered org repo list
+        if [ -n "${INPUT_REPOSITORIES:-}" ]; then
+          REPOS=$(echo "$INPUT_REPOSITORIES" | tr ',' ' ')
+        else
+          echo "Fetching all repositories in org ${PROJECT_ORG}..."
+          REPOS=$(gh api --paginate "orgs/${PROJECT_ORG}/repos?per_page=100" \
+            --jq '.[].full_name')
+        fi
+
+        # Resolve the Project node ID (GraphQL)
+        PROJECT_ID=$(gh api graphql \
+          -f org="$PROJECT_ORG" \
+          -F number="$PROJECT_NUMBER" \
+          -f query='
+            query($org: String!, $number: Int!) {
+              organization(login: $org) {
+                projectV2(number: $number) { id }
+              }
+            }' \
+          --jq '.data.organization.projectV2.id')
+
+        if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+          echo "::error::Project $PROJECT_ORG/$PROJECT_NUMBER not found or not accessible"
+          exit 1
+        fi
+
+        ADDED=0
+        FAILED=0
+        {
+          echo "## Sync PRs to Project ${PROJECT_ORG}/${PROJECT_NUMBER}"
+          echo ""
+          echo "| Repository | Open PRs | Added/Present | Failed |"
+          echo "|---|---|---|---|"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        for REPO in $REPOS; do
+          # Validate input format (owner/name)
+          if ! [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::warning::Skipping invalid repository name: $REPO"
+            continue
+          fi
+
+          echo "Scanning $REPO"
+
+          # List open PRs (REST); node_id is the GraphQL content ID
+          if ! PR_LIST=$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" \
+              --jq '.[] | "\(.number) \(.node_id)"'); then
+            echo "::warning::Unable to list PRs for $REPO"
+            FAILED=$((FAILED + 1))
+            echo "| ${REPO} | - | 0 | error |" >> "$GITHUB_STEP_SUMMARY"
+            continue
+          fi
+
+          TOTAL=0
+          OK=0
+          ERR=0
+          while read -r PR_NUMBER NODE_ID; do
+            [ -z "${NODE_ID:-}" ] && continue
+            TOTAL=$((TOTAL + 1))
+
+            # Add PR to Project (GraphQL); returns the existing item if already added
+            if gh api graphql \
+                -f project="$PROJECT_ID" \
+                -f content="$NODE_ID" \
+                -f query='
+                  mutation($project: ID!, $content: ID!) {
+                    addProjectV2ItemById(input: {projectId: $project, contentId: $content}) {
+                      item { id }
+                    }
+                  }' > /dev/null; then
+              echo "  ${REPO}#${PR_NUMBER} synced"
+              OK=$((OK + 1))
+            else
+              echo "::warning::Failed to add ${REPO}#${PR_NUMBER}"
+              ERR=$((ERR + 1))
+            fi
+          done <<< "$PR_LIST"
+
+          ADDED=$((ADDED + OK))
+          FAILED=$((FAILED + ERR))
+          echo "| ${REPO} | ${TOTAL} | ${OK} | ${ERR} |" >> "$GITHUB_STEP_SUMMARY"
+        done
+
+        echo ""
+        echo "Total synced: $ADDED, failed: $FAILED"
+
+        if [ "$FAILED" -gt 0 ]; then
+          exit 1
+        fi
