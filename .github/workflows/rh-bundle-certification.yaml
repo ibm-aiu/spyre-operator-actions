@@ -13,8 +13,12 @@
 #   - IMAGE_SOURCE_PREFIX is replaced with IMAGE_TARGET_PREFIX in the CSV
 #   - `default: IMAGE_SOURCE_PREFIX/...` lines are removed from other manifests
 #   - `fast-` channels are renamed to `stable-` in metadata/annotations.yaml
+#   - `<version>-dev` is replaced with `<version>` in the CSV (the development
+#     versions in config/ of the source repository)
 #
-# Dry-run (submit=false, the default; used for scheduled and PR runs):
+# The `mode` input selects what is written:
+#
+# dry-run (the default; the only mode for scheduled and PR runs):
 #   The prepared branch is served from a temporary git daemon on the runner, so
 #   nothing is written to GitHub. The pipeline pushes the digest-pinned branch
 #   to that daemon and the pinning diff is uploaded as an artifact.
@@ -23,20 +27,30 @@
 #   using operator-image-registry-username and
 #   operator-image-registry-password when it is private.
 #
-# Submit (submit=true):
+# dry-run-fork:
 #   Only allowed when the run was started manually (workflow_dispatch). The job
-#   runs in the `rh-certification` environment, which holds the secrets below
-#   and can be configured with required reviewers as an approval gate.
-#   The fork is synchronized with upstream, the branch <package>-<version> is
-#   pushed to the fork, and the pipeline pushes <branch>-pinned and opens the
-#   pull request. `operator_image` and registry credentials are refused.
+#   runs in the `rh-certification-fork` environment and uses CERT_GITHUB_TOKEN
+#   only (no SSH key). The fork is synchronized with upstream and the branch
+#   <package>-<version>-dry-run is force-pushed to the fork. The pipeline runs
+#   against the git daemon as in dry-run; its digest pinning is then committed
+#   on top of the branch and pushed to the fork as <branch>-pinned. Results are
+#   not submitted and no pull request is opened. `operator_image` and registry
+#   credentials are refused.
 #
-# Secrets (environment secrets on `rh-certification`, used only on submit):
-#   PYXIS_API_TOKEN       Partner Connect API key
-#   CERT_GITHUB_TOKEN     GitHub token that can sync the fork and open a pull
-#                         request against the upstream repository
-#   CERT_FORK_SSH_KEY     SSH private key (e.g. deploy key) with write access to
-#                         the fork
+# submit:
+#   Only allowed when the run was started manually (workflow_dispatch). The job
+#   runs in the `rh-certification` environment, which can be configured with
+#   required reviewers as an approval gate. The fork is synchronized with
+#   upstream, the branch <package>-<version> is pushed to the fork, and the
+#   pipeline pushes <branch>-pinned, submits the results and opens the pull
+#   request. `operator_image` and registry credentials are refused.
+#
+# Secrets (environment secrets, not used by dry-run):
+#   PYXIS_API_TOKEN       Partner Connect API key (rh-certification only)
+#   CERT_GITHUB_TOKEN     GitHub token that can sync and push to the fork and
+#                         open a pull request against the upstream repository
+#   CERT_FORK_SSH_KEY     Private key of a deploy key with write access to the
+#                         fork (rh-certification only)
 
 name: Red Hat Bundle Certification
 
@@ -64,17 +78,23 @@ on:
         type: string
         default: 'bundle'
       operator_image:
-        description: 'Dry-run only: operator image to use instead of the one in
-          the CSV (e.g., ghcr.io/ibm-aiu/spyre-operator:1.5.0-dev)'
+        description: 'dry-run mode only: operator image to use instead of the one
+          in the CSV (e.g., ghcr.io/ibm-aiu/spyre-operator:1.5.0-dev)'
         required: false
         type: string
-      submit:
-        description: 'Submit the results and open a pull request to certified-operators'
+      mode:
+        description: 'dry-run: write nothing. dry-run-fork: push the prepared and
+          pinned branches to the fork. submit: also submit the results and open
+          a pull request to certified-operators.'
         required: false
-        type: boolean
-        default: false
+        type: choice
+        options:
+        - dry-run
+        - dry-run-fork
+        - submit
+        default: 'dry-run'
       fork_repository:
-        description: 'Fork of certified-operators used on submit'
+        description: 'Fork of certified-operators used by dry-run-fork and submit'
         required: false
         type: string
         default: 'ibm-aiu/certified-operators'
@@ -114,10 +134,10 @@ on:
       operator_image:
         required: false
         type: string
-      submit:
+      mode:
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: 'dry-run'
       fork_repository:
         required: false
         type: string
@@ -154,16 +174,17 @@ on:
         required: false
       CERT_GITHUB_TOKEN:
         description: 'GitHub token to sync the fork and open the pull request. Prefer
-          an environment secret on rh-certification.'
+          an environment secret on rh-certification and rh-certification-fork.'
         required: false
       CERT_FORK_SSH_KEY:
-        description: 'SSH private key with write access to the fork. Prefer an
-          environment secret on rh-certification.'
+        description: 'Private key of a deploy key with write access to the fork.
+          Prefer an environment secret on rh-certification and rh-certification-fork.'
         required: false
 
-# Serialize submissions; dry-runs are not limited here (callers set their own).
+# Serialize the runs that write to the fork; dry-runs are not limited here
+# (callers set their own).
 concurrency:
-  group: rh-bundle-certification-${{ inputs.submit && 'submit' || github.run_id }}
+  group: rh-bundle-certification-${{ inputs.mode != 'dry-run' && 'fork' || github.run_id }}
   cancel-in-progress: false
 
 permissions: {}
@@ -185,27 +206,35 @@ jobs:
     steps:
     - name: Validate trigger and inputs
       env:
-        SUBMIT: ${{ inputs.submit }}
+        MODE: ${{ inputs.mode }}
         EVENT_NAME: ${{ github.event_name }}
         OPERATOR_IMAGE: ${{ inputs.operator_image }}
         OPERATOR_IMAGE_REGISTRY_USERNAME: ${{ secrets.operator-image-registry-username }}
         OPERATOR_IMAGE_REGISTRY_PASSWORD: ${{ secrets.operator-image-registry-password }}
       run: |
-        if [ "$SUBMIT" != "true" ]; then
-          echo "Dry-run: results are not submitted."
-          exit 0
-        fi
+        case "$MODE" in
+          dry-run)
+            echo "Dry-run: nothing is written to GitHub and results are not submitted."
+            exit 0
+            ;;
+          dry-run-fork | submit) ;;
+          *)
+            echo "::error::Unknown mode '${MODE}'; use dry-run, dry-run-fork or submit"
+            exit 1
+            ;;
+        esac
         # Scheduled and PR runs must always be dry-runs.
         if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
-          echo "::error::submit=true is only allowed for manually started runs (workflow_dispatch), not '${EVENT_NAME}'"
+          echo "::error::mode=${MODE} is only allowed for manually started runs (workflow_dispatch), not '${EVENT_NAME}'"
           exit 1
         fi
+        # What is pushed to the fork must reference the released images.
         if [ -n "$OPERATOR_IMAGE" ]; then
-          echo "::error::operator_image is for dry-runs only; the submitted bundle must reference ${IMAGE_TARGET_PREFIX}"
+          echo "::error::operator_image is for the dry-run mode only; the bundle pushed to the fork must reference ${IMAGE_TARGET_PREFIX}"
           exit 1
         fi
         if [ -n "$OPERATOR_IMAGE_REGISTRY_USERNAME" ] || [ -n "$OPERATOR_IMAGE_REGISTRY_PASSWORD" ]; then
-          echo "::error::operator-image-registry-username/operator-image-registry-password are for dry-runs only; refusing to submit"
+          echo "::error::operator-image-registry-username/operator-image-registry-password are for the dry-run mode only"
           exit 1
         fi
 
@@ -214,20 +243,29 @@ jobs:
     permissions:
       contents: read
     runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
-    environment: ${{ inputs.submit && 'rh-certification' || '' }}
+    environment: ${{ inputs.mode == 'submit' && 'rh-certification' || inputs.mode == 'dry-run-fork'
+      && 'rh-certification-fork' || '' }}
     timeout-minutes: 240
     steps:
-    - name: Validate submission secrets
-      if: inputs.submit
+    - name: Validate secrets
+      if: inputs.mode != 'dry-run'
       env:
+        MODE: ${{ inputs.mode }}
         PYXIS_API_TOKEN: ${{ secrets.PYXIS_API_TOKEN }}
         CERT_GITHUB_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
         CERT_FORK_SSH_KEY: ${{ secrets.CERT_FORK_SSH_KEY }}
       run: |
+        if [ "$MODE" = "submit" ]; then
+          NAMES=(PYXIS_API_TOKEN CERT_GITHUB_TOKEN CERT_FORK_SSH_KEY)
+          ENVIRONMENT=rh-certification
+        else
+          NAMES=(CERT_GITHUB_TOKEN)
+          ENVIRONMENT=rh-certification-fork
+        fi
         RC=0
-        for name in PYXIS_API_TOKEN CERT_GITHUB_TOKEN CERT_FORK_SSH_KEY; do
+        for name in "${NAMES[@]}"; do
           if [ -z "${!name}" ]; then
-            echo "::error::${name} secret is not set in the rh-certification environment"
+            echo "::error::${name} secret is not set in the ${ENVIRONMENT} environment"
             RC=1
           fi
         done
@@ -251,6 +289,7 @@ jobs:
       id: bundle
       env:
         BUNDLE_DIR: source/${{ inputs.bundle_dir }}
+        MODE: ${{ inputs.mode }}
       run: |
         set -euo pipefail
         CSV=$(find "$BUNDLE_DIR/manifests" -maxdepth 1 -name '*.clusterserviceversion.yaml')
@@ -264,10 +303,16 @@ jobs:
           echo "::error::Could not read the package name or version from the bundle"
           exit 1
         fi
+        # dry-run-fork uses its own branch so that it never collides with the
+        # branch of a submission.
+        BRANCH="${PACKAGE}-${VERSION}"
+        if [ "$MODE" = "dry-run-fork" ]; then
+          BRANCH="${BRANCH}-dry-run"
+        fi
         {
           echo "package=${PACKAGE}"
           echo "version=${VERSION}"
-          echo "branch=${PACKAGE}-${VERSION}"
+          echo "branch=${BRANCH}"
           echo "bundle-path=operators/${PACKAGE}/${VERSION}"
         } >> "$GITHUB_OUTPUT"
         echo "Bundle: ${PACKAGE} ${VERSION}"
@@ -275,9 +320,10 @@ jobs:
     - name: Prepare certified-operators branch
       id: branch
       env:
-        SUBMIT: ${{ inputs.submit }}
+        MODE: ${{ inputs.mode }}
         BUNDLE_DIR: ${{ github.workspace }}/source/${{ inputs.bundle_dir }}
         PACKAGE: ${{ steps.bundle.outputs.package }}
+        VERSION: ${{ steps.bundle.outputs.version }}
         BRANCH: ${{ steps.bundle.outputs.branch }}
         BUNDLE_PATH: ${{ steps.bundle.outputs.bundle-path }}
         OPERATOR_IMAGE: ${{ inputs.operator_image }}
@@ -286,7 +332,7 @@ jobs:
         GH_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
       run: |
         set -euo pipefail
-        if [ "$SUBMIT" = "true" ]; then
+        if [ "$MODE" != "dry-run" ]; then
           # Same as resetting the fork's main to upstream in the manual procedure,
           # but without force-pushing.
           gh api -X POST "repos/${FORK}/merge-upstream" -f branch=main
@@ -298,7 +344,7 @@ jobs:
         cd certified-operators
         git sparse-checkout set "operators/${PACKAGE}"
 
-        if [ "$SUBMIT" = "true" ]; then
+        if [ "$MODE" = "submit" ]; then
           if [ -n "$(git ls-remote --heads origin "$BRANCH" "${BRANCH}-pinned")" ]; then
             echo "::error::${BRANCH} or ${BRANCH}-pinned already exists in ${FORK}; delete it before submitting again"
             exit 1
@@ -309,7 +355,7 @@ jobs:
           exit 1
         fi
         if [ -e "$BUNDLE_PATH" ]; then
-          if [ "$SUBMIT" = "true" ]; then
+          if [ "$MODE" = "submit" ]; then
             echo "::error::${BUNDLE_PATH} already exists upstream; bump the bundle version"
             exit 1
           fi
@@ -329,6 +375,14 @@ jobs:
           "$BUNDLE_PATH/metadata/annotations.yaml"
         if grep -rn -F "$IMAGE_SOURCE_PREFIX" "$BUNDLE_PATH"; then
           echo "::error::${IMAGE_SOURCE_PREFIX} is still referenced in the bundle"
+          exit 1
+        fi
+        # The development versions in config/ of the source repository (e.g. the
+        # operand versions in alm-examples and the operator-version label) are
+        # bundled as <version>-dev; the released bundle uses <version>.
+        perl -pi -e 's/\Q$ENV{VERSION}\E-dev\b/$ENV{VERSION}/g' "$CSV"
+        if grep -rn -F "${VERSION}-dev" "$BUNDLE_PATH"; then
+          echo "::error::${VERSION}-dev is still referenced in the bundle"
           exit 1
         fi
 
@@ -352,7 +406,7 @@ jobs:
         git show --stat HEAD
 
     - name: Push branch to the fork
-      if: inputs.submit
+      if: inputs.mode == 'submit'
       working-directory: certified-operators
       env:
         FORK: ${{ inputs.fork_repository }}
@@ -368,6 +422,40 @@ jobs:
         curl -fsSL --proto =https --proto-redir =https https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$SSH_DIR/known_hosts"
         export GIT_SSH_COMMAND="ssh -i $SSH_DIR/id_rsa -o IdentitiesOnly=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts"
         git push "git@github.com:${FORK}.git" "HEAD:refs/heads/${BRANCH}"
+
+    - name: Push dry-run branch to the fork
+      if: inputs.mode == 'dry-run-fork'
+      working-directory: certified-operators
+      env:
+        FORK: ${{ inputs.fork_repository }}
+        BRANCH: ${{ steps.bundle.outputs.branch }}
+        GH_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        # Pass the token in a header (not in the URL) so that it never appears
+        # in the remote URL or in git output. The encoded value is masked too.
+        AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+        echo "::add-mask::${AUTH}"
+        push() {
+          git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" push "https://github.com/${FORK}.git" "$@"
+        }
+        # Overwrite the previous dry-run, and delete its pinned branch so that
+        # a stale one is not mistaken for the result of this run.
+        push --force "HEAD:refs/heads/${BRANCH}"
+        if [ -n "$(git ls-remote --heads "https://github.com/${FORK}.git" "${BRANCH}-pinned")" ]; then
+          push --delete "${BRANCH}-pinned"
+        fi
+
+    # dry-run and dry-run-fork serve the branch from a git daemon on the runner.
+    # With CRC's user-mode networking, host.crc.testing reaches the runner only
+    # when host-network-access is enabled, which must be set before `crc setup`.
+    # crc-github-action has no input for it, so pre-seed the crc config file;
+    # `crc config set` in the action keeps the existing keys.
+    - name: Allow CRC to reach the runner
+      if: inputs.mode != 'submit'
+      run: |
+        mkdir -p ~/.crc
+        echo '{"host-network-access": true}' > ~/.crc/crc.json
 
     - name: Set up CRC
       uses: crc-org/crc-github-action@466b8741bd91b9ee59f37db92b69f285cacada41 # v1.0.1
@@ -502,7 +590,7 @@ jobs:
 
     - name: Create pipeline secrets and workspace
       env:
-        SUBMIT: ${{ inputs.submit }}
+        MODE: ${{ inputs.mode }}
         PYXIS_API_TOKEN: ${{ secrets.PYXIS_API_TOKEN }}
         CERT_GITHUB_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
       run: |
@@ -512,21 +600,23 @@ jobs:
         oc create secret generic kubeconfig -n "$OCO_NAMESPACE" --from-file=kubeconfig="$KUBECONFIG_FILE"
         rm -f "$KUBECONFIG_FILE"
 
-        if [ "$SUBMIT" = "true" ]; then
+        if [ "$MODE" = "submit" ]; then
           oc create secret generic github-api-token -n "$OCO_NAMESPACE" \
             --from-literal=GITHUB_TOKEN="$CERT_GITHUB_TOKEN"
           oc create secret generic pyxis-api-secret -n "$OCO_NAMESPACE" \
             --from-literal=pyxis_api_key="$PYXIS_API_TOKEN"
-          SSH_DIR="${RUNNER_TEMP}/ssh"
-          oc create secret generic github-ssh-credentials -n "$OCO_NAMESPACE" \
-            --from-file=id_rsa="$SSH_DIR/id_rsa" --from-file=known_hosts="$SSH_DIR/known_hosts"
         else
-          # Not used when submit=false; created so that the OperatorPipeline
+          # Not used unless submitting; created so that the OperatorPipeline
           # status does not report missing secrets.
           oc create secret generic github-api-token -n "$OCO_NAMESPACE" \
             --from-literal=GITHUB_TOKEN=unused-in-dry-run
           oc create secret generic pyxis-api-secret -n "$OCO_NAMESPACE" \
             --from-literal=pyxis_api_key=unused-in-dry-run
+        fi
+        if [ "$MODE" = "submit" ]; then
+          SSH_DIR="${RUNNER_TEMP}/ssh"
+          oc create secret generic github-ssh-credentials -n "$OCO_NAMESPACE" \
+            --from-file=id_rsa="$SSH_DIR/id_rsa" --from-file=known_hosts="$SSH_DIR/known_hosts"
         fi
 
         # A named claim (instead of volumeClaimTemplate) so that the results can
@@ -547,7 +637,7 @@ jobs:
 
     - name: Serve the branch from a temporary git daemon
       id: gitd
-      if: ${{ !inputs.submit }}
+      if: inputs.mode != 'submit'
       env:
         BRANCH: ${{ steps.bundle.outputs.branch }}
       run: |
@@ -571,11 +661,13 @@ jobs:
           --pid-file="${RUNNER_TEMP}/git-daemon.pid" "$GIT_ROOT"
         URL="git://host.crc.testing/certified-operators.git"
 
-        # Check that pods can reach the daemon with the same git-init binary as
-        # the pipeline's git-clone task. This also pre-pulls its image.
+        # Check that pods can reach the daemon, using git in the image of the
+        # pipeline's git-clone task. This also pre-pulls the image. git-init
+        # itself is not used because it fails outside a TaskRun (it writes to
+        # /tekton/termination).
         oc run rhcert-git-check -n "$OCO_NAMESPACE" --image="$GIT_INIT_IMAGE" \
           --restart=Never --env=HOME=/tmp --command -- \
-          /ko-app/git-init -url="$URL" -revision="$BRANCH" -path=/tmp/src
+          git ls-remote --exit-code "$URL" "refs/heads/${BRANCH}"
         for _ in $(seq 1 60); do
           PHASE=$(oc get pod rhcert-git-check -n "$OCO_NAMESPACE" -o jsonpath='{.status.phase}')
           if [ "$PHASE" = "Succeeded" ] || [ "$PHASE" = "Failed" ]; then
@@ -596,7 +688,8 @@ jobs:
       id: run
       timeout-minutes: 150
       env:
-        SUBMIT: ${{ inputs.submit }}
+        MODE: ${{ inputs.mode }}
+        SUBMIT: ${{ inputs.mode == 'submit' }}
         GIT_REPO_URL: ${{ steps.gitd.outputs.git-repo-url || format('git@github.com:{0}.git',
           inputs.fork_repository) }}
         BRANCH: ${{ steps.bundle.outputs.branch }}
@@ -613,7 +706,7 @@ jobs:
           '$ARGS.named + {env: "prod", pin_digests: "true"}
             | to_entries | map({name: .key, value: .value})')
         WORKSPACES='[{"name": "pipeline", "persistentVolumeClaim": {"claimName": "rhcert-workspace"}}]'
-        if [ "$SUBMIT" = "true" ]; then
+        if [ "$MODE" = "submit" ]; then
           WORKSPACES=$(jq '. + [{"name": "ssh-dir", "secret": {"secretName": "github-ssh-credentials"}}]' <<<"$WORKSPACES")
         fi
         RUN=$(jq -n --arg ns "$OCO_NAMESPACE" --argjson params "$PARAMS" --argjson ws "$WORKSPACES" '{
@@ -646,14 +739,52 @@ jobs:
           exit 1
         fi
 
+    # The pipeline pushed the pinned branch to the git daemon, on top of a
+    # history-less snapshot. Commit the same change on top of the branch pushed
+    # to the fork and push it as <branch>-pinned.
+    - name: Push pinned branch to the fork
+      id: pinned
+      if: always() && inputs.mode == 'dry-run-fork' && steps.run.outputs.pipelinerun != ''
+      working-directory: certified-operators
+      env:
+        FORK: ${{ inputs.fork_repository }}
+        BRANCH: ${{ steps.bundle.outputs.branch }}
+        GIT_ROOT: ${{ steps.gitd.outputs.git-root }}
+        GH_TOKEN: ${{ secrets.CERT_GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        BARE="${GIT_ROOT}/certified-operators.git"
+        if ! git -C "$BARE" rev-parse -q --verify "${BRANCH}-pinned" >/dev/null; then
+          echo "The pipeline did not push ${BRANCH}-pinned (no pinning was needed, or it failed before pinning)."
+          exit 0
+        fi
+        git -C "$BARE" diff --binary "$BRANCH" "${BRANCH}-pinned" > "${RUNNER_TEMP}/pinning.patch"
+        git apply --index "${RUNNER_TEMP}/pinning.patch"
+        # Keep the author and message of the pipeline's commit-pinned-digest task.
+        git -C "$BARE" log -1 --format='%an%n%ae%n%B' "${BRANCH}-pinned" > "${RUNNER_TEMP}/pinned-commit"
+        NAME=$(sed -n 1p "${RUNNER_TEMP}/pinned-commit")
+        EMAIL=$(sed -n 2p "${RUNNER_TEMP}/pinned-commit")
+        sed 1,2d "${RUNNER_TEMP}/pinned-commit" > "${RUNNER_TEMP}/pinned-message"
+        git -c user.name="$NAME" -c user.email="$EMAIL" commit -q -F "${RUNNER_TEMP}/pinned-message"
+        AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+        echo "::add-mask::${AUTH}"
+        git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" \
+          push --force "https://github.com/${FORK}.git" "HEAD:refs/heads/${BRANCH}-pinned"
+        echo "pushed=true" >> "$GITHUB_OUTPUT"
+
     - name: Collect results
       if: always() && steps.run.outputs.pipelinerun != ''
       env:
         RUN: ${{ steps.run.outputs.pipelinerun }}
         BRANCH: ${{ steps.bundle.outputs.branch }}
         GIT_ROOT: ${{ steps.gitd.outputs.git-root }}
+        FORK: ${{ inputs.fork_repository }}
+        MODE: ${{ inputs.mode }}
+        PINNED_PUSHED_DRY_RUN_FORK: ${{ steps.pinned.outputs.pushed }}
       run: |
-        set -uo pipefail
+        # Best effort: collect as much as possible even if a command fails. The
+        # default shell is `bash -e`, so turn -e off explicitly.
+        set +e -uo pipefail
         mkdir -p "$ARTIFACTS_DIR"
         tkn pipelinerun logs "$RUN" -n "$OCO_NAMESPACE" > "$ARTIFACTS_DIR/pipelinerun.log" 2>&1
         oc get pipelinerun "$RUN" -n "$OCO_NAMESPACE" -o yaml > "$ARTIFACTS_DIR/pipelinerun.yaml"
@@ -678,9 +809,16 @@ jobs:
         fi
         oc delete pod rhcert-collect -n "$OCO_NAMESPACE" --wait=false
 
-        if [ -n "$GIT_ROOT" ] \
-          && git -C "$GIT_ROOT/certified-operators.git" rev-parse -q --verify "${BRANCH}-pinned" >/dev/null; then
-          git -C "$GIT_ROOT/certified-operators.git" diff "$BRANCH" "${BRANCH}-pinned" > "$ARTIFACTS_DIR/pinning.diff"
+        PINNED_PUSHED=${PINNED_PUSHED_DRY_RUN_FORK:-false}
+        if [ -n "$GIT_ROOT" ]; then
+          if git -C "$GIT_ROOT/certified-operators.git" rev-parse -q --verify "${BRANCH}-pinned" >/dev/null; then
+            git -C "$GIT_ROOT/certified-operators.git" diff "$BRANCH" "${BRANCH}-pinned" > "$ARTIFACTS_DIR/pinning.diff"
+          fi
+        elif git -C certified-operators fetch -q --depth 1 origin "refs/heads/${BRANCH}-pinned" 2>/dev/null; then
+          # submit: the pipeline pushed the pinned branch to the fork (origin of
+          # the checkout).
+          PINNED_PUSHED=true
+          git -C certified-operators diff HEAD FETCH_HEAD > "$ARTIFACTS_DIR/pinning.diff"
         fi
 
         {
@@ -707,9 +845,17 @@ jobs:
             echo ""
             echo "Digest pinning changed the bundle; see pinning.diff in the artifact."
           fi
+          if [ "$MODE" != "dry-run" ]; then
+            echo ""
+            echo "Branch: https://github.com/${FORK}/tree/${BRANCH}"
+            if [ "$PINNED_PUSHED" = "true" ]; then
+              echo ""
+              echo "Pinned branch: https://github.com/${FORK}/tree/${BRANCH}-pinned"
+            fi
+          fi
           PR_URL=$(oc get taskruns -n "$OCO_NAMESPACE" \
             -l "tekton.dev/pipelineRun=${RUN},tekton.dev/pipelineTask=open-pull-request" \
-            -o jsonpath='{.items[0].status.results[?(@.name=="pr_url")].value}' 2>/dev/null)
+            -o jsonpath='{.items[*].status.results[?(@.name=="pr_url")].value}' 2>/dev/null)
           if [ -n "$PR_URL" ]; then
             echo ""
             echo "Pull request: ${PR_URL}"
