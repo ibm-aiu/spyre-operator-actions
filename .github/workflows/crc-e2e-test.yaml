@@ -58,7 +58,7 @@ on:
         description: "CRC version"
         required: false
         type: string
-        default: '2.61.0' # OpenShift 4.21
+        default: '2.64.0' # OpenShift 4.22
     secrets:
       crc-pull-secret:
         description: 'CRC pull secret for setting up OpenShift Local (CRC)'
@@ -95,12 +95,6 @@ jobs:
         branch-name: ${{ inputs.branch-name }}
         operator-version: ${{ inputs.operator-version }}
         operator-channel: ${{ inputs.operator-channel }}
-
-    # Reusable action: Install Operator SDK CLI tool with GPG verification
-    - name: Install operator-sdk
-      uses: ./spyre-operator-actions/.github/actions/install-operator-sdk
-      with:
-        version: v1.38.0
 
     - name: Checkout ${{ inputs.repository }} repository
       uses: actions/checkout@v4
