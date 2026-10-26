@@ -170,7 +170,7 @@ jobs:
 
     # Reusable action: Start background log capture for Spyre components
     # Captures logs from: spyre-operator, spyre-device-plugin, spyre-webhook-validator,
-    # spyre-health-checker, and secondary-scheduler
+    # spyre-health-checker, secondary-scheduler, and openshift-kube-scheduler
     - name: Start log capture
       uses: ./spyre-operator-actions/.github/actions/capture-component-logs
       with:
