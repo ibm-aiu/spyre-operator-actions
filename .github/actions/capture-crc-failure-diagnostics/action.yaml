@@ -1,0 +1,109 @@
+# +-------------------------------------------------------------------+
+# | Copyright IBM Corp. 2026                                          |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: 'Capture CRC Failure Diagnostics'
+description: >-
+  Collect what explains a failed CRC (OpenShift Local) setup or restart: the state and log of CRC on the
+  runner and, when the cluster answers, its nodes, cluster operators, pods that are not ready and their events.
+  Use it with "if: failure()". It never fails the job.
+
+inputs:
+  log-directory:
+    description: 'Directory to store the diagnostics file (crc-failure-diagnostics.log)'
+    required: false
+    default: 'logs'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Capture CRC failure diagnostics
+      shell: bash
+      env:
+        LOG_DIRECTORY: ${{ inputs.log-directory }}
+      run: |
+        # Diagnostics only: nothing here may fail the job or hide the error of the step that failed.
+        set +e
+        set +o pipefail
+
+        # Time limit, in seconds, of the commands below. This step runs when something is wrong, so a command
+        # that hangs must not stall it. Every oc call passes --request-timeout; keep that when adding one.
+        LIMIT=60
+
+        OUT="${LOG_DIRECTORY}/crc-failure-diagnostics.log"
+        mkdir -p "${LOG_DIRECTORY}"
+        : > "${OUT}"
+
+        # capture TITLE COMMAND [ARG...]: show the output of COMMAND under a title, in the job log and in the file.
+        # timeout returns 124 when it stopped a command, and 137 when the command ignored that and had to be killed.
+        capture() {
+          title="$1"
+          shift
+          {
+            echo ""
+            echo "=== ${title} ==="
+            "$@" 2>&1
+            status=$?
+            case "${status}" in
+              0) ;;
+              124) echo "(timed out)" ;;
+              137) echo "(killed, probably because it did not stop at the time limit; exit status 137)" ;;
+              *) echo "(exit status ${status})" ;;
+            esac
+          } | tee -a "${OUT}"
+        }
+
+        # Pods of every namespace that are not Completed, or not Running with all containers ready.
+        pods_not_ready() {
+          oc get pods -A --request-timeout="${LIMIT}s" | awk '
+            NR == 1 { print; next }
+            { split($3, ready, "/") }
+            $4 == "Completed" { next }
+            $4 != "Running" || ready[1] != ready[2] { print }'
+        }
+
+        # The events of up to 10 pods that cannot pull an image, crash, or do not start (where the reason is).
+        events_of_problem_pods() {
+          oc get pods -A --no-headers --request-timeout="${LIMIT}s" \
+            | awk '$4 ~ /BackOff|Err|Invalid|Pending|ContainerCreating|Unknown/ { print $1, $2 }' \
+            | head -10 \
+            | while read -r namespace pod; do
+                echo "--- ${namespace}/${pod}"
+                oc describe pod -n "${namespace}" "${pod}" --request-timeout="${LIMIT}s" | sed -n '/^Events:/,$p'
+              done
+        }
+
+        last_warning_events() {
+          oc get events -A --field-selector type=Warning --sort-by=.lastTimestamp --request-timeout="${LIMIT}s" | tail -n 40
+        }
+
+        # On the runner: what CRC itself says. crc status talks to the VM and can hang when CRC is in a bad state
+        # (--kill-after: in case crc ignores the first signal).
+        if command -v crc > /dev/null 2>&1; then
+          capture "crc status" timeout --kill-after=10 "${LIMIT}" crc status
+        else
+          echo "crc is not installed on the runner" | tee -a "${OUT}"
+        fi
+        capture "last 100 lines of ${HOME}/.crc/crc.log" tail -n 100 "${HOME}/.crc/crc.log"
+
+        # In the cluster, if it answers.
+        if ! command -v oc > /dev/null 2>&1; then
+          echo "oc is not installed, so the CRC setup did not complete: no cluster diagnostics" | tee -a "${OUT}"
+          exit 0
+        fi
+        if ! oc get --raw /version --request-timeout="${LIMIT}s" > /dev/null 2>&1; then
+          capture "oc get --raw /version (the cluster does not answer)" oc get --raw /version --request-timeout="${LIMIT}s"
+          echo "The cluster is not reachable: no cluster diagnostics" | tee -a "${OUT}"
+          exit 0
+        fi
+
+        capture "nodes" oc get nodes -o wide --request-timeout="${LIMIT}s"
+        capture "cluster operators" oc get clusteroperators --request-timeout="${LIMIT}s"
+        capture "machine config pools" oc get machineconfigpools --request-timeout="${LIMIT}s"
+        capture "pods that are not ready (all namespaces)" pods_not_ready
+        capture "events of pods that cannot start (first 10)" events_of_problem_pods
+        capture "last 40 warning events (all namespaces)" last_warning_events
+
+        echo ""
+        echo "The same text is in ${OUT}"

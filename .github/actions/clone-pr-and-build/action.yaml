@@ -81,7 +81,9 @@ runs:
             echo "Building spyre-operator with bundle (catalog will be built after push)..."
             TEST_REGISTRY="image-registry.openshift-image-registry.svc:5000/spyre-operator"
             make docker-build VERSION=${COMPONENT_TAG} REGISTRY=${TEST_REGISTRY} DOCKER=docker
-            make bundle bundle-build VERSION=${COMPONENT_TAG} REGISTRY=${TEST_REGISTRY} DOCKER=docker
+            # make downloads kustomize with a script that asks the GitHub API without a login, which GitHub
+            # rate-limits. It uses GITHUB_TOKEN when it is set.
+            GITHUB_TOKEN="${GH_TOKEN}" make bundle bundle-build VERSION=${COMPONENT_TAG} REGISTRY=${TEST_REGISTRY} DOCKER=docker
             docker tag ${TEST_REGISTRY}/spyre-operator:${COMPONENT_TAG} ${CRC_REGISTRY}/spyre-operator/spyre-operator:${COMPONENT_TAG}
             docker tag ${TEST_REGISTRY}/spyre-operator-bundle:${COMPONENT_TAG} ${CRC_REGISTRY}/openshift-marketplace/spyre-operator-bundle:${COMPONENT_TAG}
         else
