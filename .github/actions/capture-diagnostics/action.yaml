@@ -32,14 +32,31 @@ runs:
       run: |
         #!/bin/bash -e
 
-        oc get po -n "${NAMESPACE}"
+        # Without oc, or without a cluster that answers (for example when the CRC setup failed), there is
+        # nothing to collect. Say why and succeed, so that this step does not hide the error of the step
+        # that failed. The step "Capture CRC failure diagnostics" collects what CRC itself reports.
+        if ! command -v oc > /dev/null 2>&1; then
+          echo "Skipping the diagnostics: oc is not installed, so the CRC setup did not complete."
+          exit 0
+        fi
+        # Time limit, in seconds, of every oc call below, so that a cluster that stops answering cannot stall this
+        # step. Every oc call passes --request-timeout; keep that when adding one.
+        LIMIT=60
+
+        if ! CLUSTER_ERROR=$(oc get --raw /version --request-timeout="${LIMIT}s" 2>&1); then
+          echo "Skipping the diagnostics: the cluster does not answer. oc says:"
+          echo "${CLUSTER_ERROR}" | tail -n 3
+          exit 0
+        fi
+
+        oc get po -n "${NAMESPACE}" --request-timeout="${LIMIT}s" || true
 
         mkdir -p "${LOG_DIRECTORY}"
 
         echo "=== Capturing ${COMPONENT} pod describe output ===" | tee "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
 
         # Get all component pods in namespace
-        PODS=$(oc get pods -n "${NAMESPACE}" -l app="${COMPONENT}" -o name 2>/dev/null || echo "")
+        PODS=$(oc get pods -n "${NAMESPACE}" -l app="${COMPONENT}" -o name --request-timeout="${LIMIT}s" 2>/dev/null || echo "")
 
         if [ -z "$PODS" ]; then
           echo "No ${COMPONENT} pods found in ${NAMESPACE} namespace" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
@@ -47,21 +64,21 @@ runs:
           for POD in $PODS; do
             echo "" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
             echo "=== Describe output for $POD ===" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
-            oc describe $POD -n "${NAMESPACE}" >> "${LOG_DIRECTORY}/${COMPONENT}-describe.log" 2>&1 || echo "Failed to describe $POD" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
+            oc describe $POD -n "${NAMESPACE}" --request-timeout="${LIMIT}s" >> "${LOG_DIRECTORY}/${COMPONENT}-describe.log" 2>&1 || echo "Failed to describe $POD" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
             echo "" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
           done
         fi
 
         # Also capture daemonset information
         echo "=== ${COMPONENT} DaemonSet describe ===" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
-        oc describe daemonset -n "${NAMESPACE}" -l app="${COMPONENT}" >> "${LOG_DIRECTORY}/${COMPONENT}-describe.log" 2>&1 || echo "No ${COMPONENT} daemonset found" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
+        oc describe daemonset -n "${NAMESPACE}" -l app="${COMPONENT}" --request-timeout="${LIMIT}s" >> "${LOG_DIRECTORY}/${COMPONENT}-describe.log" 2>&1 || echo "No ${COMPONENT} daemonset found" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
 
         # Capture pod status
         echo "" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
         echo "=== ${COMPONENT} pod status ===" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
-        oc get pods -n "${NAMESPACE}" -l app="${COMPONENT}" -o wide >> "${LOG_DIRECTORY}/${COMPONENT}-describe.log" 2>&1 || echo "Failed to get pod status" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
+        oc get pods -n "${NAMESPACE}" -l app="${COMPONENT}" -o wide --request-timeout="${LIMIT}s" >> "${LOG_DIRECTORY}/${COMPONENT}-describe.log" 2>&1 || echo "Failed to get pod status" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
 
         # Capture events related to component
         echo "" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
         echo "=== Recent events in ${NAMESPACE} namespace ===" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
-        oc get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' | grep -i "${COMPONENT}" >> "${LOG_DIRECTORY}/${COMPONENT}-describe.log" 2>&1 || echo "No events found for ${COMPONENT}" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"
+        oc get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' --request-timeout="${LIMIT}s" | grep -i "${COMPONENT}" >> "${LOG_DIRECTORY}/${COMPONENT}-describe.log" 2>&1 || echo "No events found for ${COMPONENT}" | tee -a "${LOG_DIRECTORY}/${COMPONENT}-describe.log"

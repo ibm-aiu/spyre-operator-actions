@@ -203,6 +203,15 @@ jobs:
         namespace: spyre-operator
         component: spyre-device-plugin
 
+    # Reusable action: When a step failed, collect what explains a CRC or cluster failure
+    # (CRC status and log, nodes, cluster operators, pods that are not ready and their events)
+    - name: Capture CRC failure diagnostics
+      if: failure()
+      timeout-minutes: 10
+      uses: ./spyre-operator-actions/.github/actions/capture-crc-failure-diagnostics
+      with:
+        log-directory: ${{ inputs.path }}/logs
+
     - name: Upload component logs
       if: always()
       uses: actions/upload-artifact@v4
