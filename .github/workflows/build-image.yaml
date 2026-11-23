@@ -112,6 +112,7 @@ jobs:
               - self-hosted
               - Linux
               - S390X
+              - spyre-s390x-runner
     runs-on: ${{ matrix.runner }}
     steps:
     - name: Debug metadata outputs
